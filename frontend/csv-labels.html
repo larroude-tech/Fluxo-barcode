@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gerenciador de Etiquetas CSV - Larroudé RFID</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .label-card {
+            transition: transform 0.2s;
+            border: 1px solid #dee2e6;
+        }
+        .label-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        .status-badge {
+            font-size: 0.8em;
+        }
+        .loading {
+            opacity: 0.6;
+            pointer-events: none;
+        }
+        .btn-print {
+            background: linear-gradient(45deg, #007bff, #0056b3);
+            border: none;
+            color: white;
+        }
+        .btn-print:hover {
+            background: linear-gradient(45deg, #0056b3, #004085);
+            color: white;
+        }
+        .btn-print-all {
+            background: linear-gradient(45deg, #28a745, #1e7e34);
+            border: none;
+            color: white;
+        }
+        .btn-print-all:hover {
+            background: linear-gradient(45deg, #1e7e34, #155724);
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid">
+        <!-- Header -->
+        <div class="row bg-primary text-white p-3 mb-4">
+            <div class="col">
+                <h1><i class="fas fa-tags"></i> Gerenciador de Etiquetas CSV</h1>
+                <p class="mb-0">Processamento de etiquetas a partir do arquivo exemplo.csv</p>
+            </div>
+        </div>
+
+        <!-- Controles -->
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5><i class="fas fa-cog"></i> Configurações</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="rfidData" class="form-label">Dados RFID (opcional)</label>
+                            <input type="text" class="form-control" id="rfidData" 
+                                   placeholder="Deixe vazio para usar o VPM">
+                            <div class="form-text">Deixe vazio para usar o VPM como dados RFID, ou insira dados personalizados</div>
+                        </div>
+                        <button class="btn btn-print-all" onclick="printAllLabels()">
+                            <i class="fas fa-print"></i> Imprimir Todas as Etiquetas
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5><i class="fas fa-info-circle"></i> Informações</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="infoContent">
+                            <p><i class="fas fa-spinner fa-spin"></i> Carregando informações...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Lista de Etiquetas -->
+        <div class="row">
+            <div class="col">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5><i class="fas fa-list"></i> Etiquetas Disponíveis</h5>
+                        <button class="btn btn-outline-primary btn-sm" onclick="loadLabels()">
+                            <i class="fas fa-sync-alt"></i> Atualizar
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div id="labelsContainer">
+                            <div class="text-center">
+                                <i class="fas fa-spinner fa-spin fa-2x text-primary"></i>
+                                <p class="mt-2">Carregando etiquetas...</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal de Status -->
+        <div class="modal fade" id="statusModal" tabindex="-1">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Status da Impressão</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body" id="statusModalBody">
+                        <!-- Conteúdo será preenchido dinamicamente -->
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const API_BASE = 'http://localhost:3002/api';
+        let labels = [];
+
+        // Carregar etiquetas ao iniciar
+        document.addEventListener('DOMContentLoaded', function() {
+            loadLabels();
+            loadInfo();
+        });
+
+        // Carregar lista de etiquetas
+        async function loadLabels() {
+            try {
+                const response = await fetch(`${API_BASE}/csv/labels`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    labels = data.data.labels;
+                    displayLabels();
+                } else {
+                    showError('Erro ao carregar etiquetas: ' + data.error);
+                }
+            } catch (error) {
+                showError('Erro de conexão: ' + error.message);
+            }
+        }
+
+        // Exibir etiquetas na interface
+        function displayLabels() {
+            const container = document.getElementById('labelsContainer');
+            
+            if (labels.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center text-muted">
+                        <i class="fas fa-exclamation-triangle fa-2x"></i>
+                        <p class="mt-2">Nenhuma etiqueta encontrada no CSV</p>
+                    </div>
+                `;
+                return;
+            }
+
+            const labelsHTML = labels.map((label, index) => `
+                <div class="col-md-6 col-lg-4 mb-3">
+                    <div class="card label-card h-100">
+                        <div class="card-header">
+                            <h6 class="mb-0">${label.style_name}</h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-6">
+                                    <small class="text-muted">VPM:</small><br>
+                                    <strong>${label.vpm}</strong>
+                                </div>
+                                <div class="col-6">
+                                    <small class="text-muted">Tamanho:</small><br>
+                                    <strong>${label.size}</strong>
+                                </div>
+                            </div>
+                            <div class="mt-2">
+                                <small class="text-muted">Cor:</small><br>
+                                <strong>${label.color}</strong>
+                            </div>
+                        </div>
+                        <div class="card-footer">
+                            <button class="btn btn-print btn-sm w-100" 
+                                    onclick="printLabel(${index + 1})" 
+                                    data-label-index="${index + 1}">
+                                <i class="fas fa-print"></i> Imprimir
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+
+            container.innerHTML = `
+                <div class="row">
+                    ${labelsHTML}
+                </div>
+            `;
+        }
+
+        // Imprimir etiqueta específica
+        async function printLabel(labelIndex) {
+            const button = document.querySelector(`[data-label-index="${labelIndex}"]`);
+            const originalText = button.innerHTML;
+            
+            try {
+                button.disabled = true;
+                button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Imprimindo...';
+                
+                const rfidData = document.getElementById('rfidData').value.trim() || null;
+                
+                const response = await fetch(`${API_BASE}/csv/print-label`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        labelIndex: labelIndex,
+                        rfidData: rfidData
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showSuccess(`Etiqueta "${labels[labelIndex - 1].style_name}" enviada para impressão!`);
+                } else {
+                    showError('Erro ao imprimir: ' + data.error);
+                }
+            } catch (error) {
+                showError('Erro de conexão: ' + error.message);
+            } finally {
+                button.disabled = false;
+                button.innerHTML = originalText;
+            }
+        }
+
+        // Imprimir todas as etiquetas
+        async function printAllLabels() {
+            const button = document.querySelector('.btn-print-all');
+            const originalText = button.innerHTML;
+            
+            try {
+                button.disabled = true;
+                button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Imprimindo todas...';
+                
+                const rfidData = document.getElementById('rfidData').value.trim() || null;
+                
+                const response = await fetch(`${API_BASE}/csv/print-all`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        rfidData: rfidData
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showStatusModal(data.data);
+                } else {
+                    showError('Erro ao imprimir todas: ' + data.error);
+                }
+            } catch (error) {
+                showError('Erro de conexão: ' + error.message);
+            } finally {
+                button.disabled = false;
+                button.innerHTML = originalText;
+            }
+        }
+
+        // Carregar informações do sistema
+        async function loadInfo() {
+            try {
+                const response = await fetch(`${API_BASE}/csv/info`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    const info = data.data;
+                    document.getElementById('infoContent').innerHTML = `
+                        <div class="row">
+                            <div class="col-6">
+                                <small class="text-muted">Total de etiquetas:</small><br>
+                                <strong>${info.totalLabels}</strong>
+                            </div>
+                            <div class="col-6">
+                                <small class="text-muted">Impressora:</small><br>
+                                <strong>${info.printerName}</strong>
+                            </div>
+                        </div>
+                        <div class="mt-2">
+                            <small class="text-muted">Arquivo CSV:</small><br>
+                            <strong>${info.csvPath}</strong>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                document.getElementById('infoContent').innerHTML = `
+                    <div class="text-danger">
+                        <i class="fas fa-exclamation-triangle"></i> Erro ao carregar informações
+                    </div>
+                `;
+            }
+        }
+
+        // Mostrar modal de status
+        function showStatusModal(data) {
+            const modalBody = document.getElementById('statusModalBody');
+            
+            modalBody.innerHTML = `
+                <div class="alert alert-success">
+                    <i class="fas fa-check-circle"></i> ${data.message}
+                </div>
+                <div class="row">
+                    <div class="col-6">
+                        <strong>Total:</strong> ${data.total}
+                    </div>
+                    <div class="col-6">
+                        <strong>Impressas:</strong> ${data.successCount}
+                    </div>
+                </div>
+                ${data.results.length > 0 ? `
+                    <div class="mt-3">
+                        <h6>Detalhes:</h6>
+                        <div class="small">
+                            ${data.results.map(result => `
+                                <div class="${result.success ? 'text-success' : 'text-danger'}">
+                                    <i class="fas fa-${result.success ? 'check' : 'times'}"></i> 
+                                    ${result.label ? result.label.style_name : 'Etiqueta'}
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                ` : ''}
+            `;
+            
+            new bootstrap.Modal(document.getElementById('statusModal')).show();
+        }
+
+        // Mostrar mensagem de sucesso
+        function showSuccess(message) {
+            const alert = document.createElement('div');
+            alert.className = 'alert alert-success alert-dismissible fade show position-fixed';
+            alert.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
+            alert.innerHTML = `
+                <i class="fas fa-check-circle"></i> ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            `;
+            document.body.appendChild(alert);
+            
+            setTimeout(() => {
+                alert.remove();
+            }, 5000);
+        }
+
+        // Mostrar mensagem de erro
+        function showError(message) {
+            const alert = document.createElement('div');
+            alert.className = 'alert alert-danger alert-dismissible fade show position-fixed';
+            alert.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
+            alert.innerHTML = `
+                <i class="fas fa-exclamation-triangle"></i> ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            `;
+            document.body.appendChild(alert);
+            
+            setTimeout(() => {
+                alert.remove();
+            }, 5000);
+        }
+    </script>
+</body>
+</html>

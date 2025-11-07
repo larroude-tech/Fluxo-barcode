@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="200" height="60" viewBox="0 0 200 60" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="200" height="60" rx="8" fill="#1e40af"/>
+  
+  <!-- Logo Icon -->
+  <circle cx="30" cy="30" r="15" fill="#ffffff" opacity="0.9"/>
+  <path d="M25 25 L30 20 L35 25 L30 35 Z" fill="#1e40af"/>
+  
+  <!-- Text LARROUDÉ -->
+  <text x="55" y="25" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#ffffff">LARROUDÉ</text>
+  <text x="55" y="40" font-family="Arial, sans-serif" font-size="10" fill="#bfdbfe">RFID SYSTEM</text>
+  
+  <!-- Decorative elements -->
+  <circle cx="170" cy="15" r="3" fill="#3b82f6" opacity="0.6"/>
+  <circle cx="180" cy="25" r="2" fill="#60a5fa" opacity="0.8"/>
+  <circle cx="175" cy="35" r="2.5" fill="#93c5fd" opacity="0.7"/>
+</svg>

@@ -1,0 +1,363 @@
+/* === LAYOUT MODERNO COM SIDEBAR === */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #f8fafc;
+  color: #1f2937;
+}
+
+.app-layout {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.content-area {
+  flex: 1;
+  overflow-y: auto;
+  background: #f8fafc;
+}
+
+/* Page Content */
+.page-content {
+  padding: 24px 0px;
+  max-width: 100%;
+  margin: 0;
+  width: 100%;
+}
+
+/* Labels Section */
+.labels-section {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 0 10px; /* Pequeno padding interno apenas para elementos que precisam */
+}
+
+/* Progress Indicator */
+.progress-indicator {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 20px;
+  padding: 20px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  margin-bottom: 24px;
+}
+
+.step-indicator {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  opacity: 0.5;
+  transition: opacity 0.3s ease;
+}
+
+.step-indicator.active {
+  opacity: 1;
+}
+
+.step-number {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #e5e7eb;
+  color: #6b7280;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 16px;
+  transition: all 0.3s ease;
+}
+
+.step-indicator.active .step-number {
+  background: linear-gradient(135deg, #3b82f6, #1e40af);
+  color: white;
+}
+
+.step-indicator span {
+  font-size: 14px;
+  font-weight: 500;
+  color: #6b7280;
+}
+
+.step-indicator.active span {
+  color: #1f2937;
+}
+
+/* Steps */
+.step {
+  background: white;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.step-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 18px;
+  font-weight: 600;
+  color: #1f2937;
+  margin-bottom: 20px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+/* Actions */
+.actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid #e5e7eb;
+}
+
+/* Stats */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.stat-card {
+  background: white;
+  padding: 20px;
+  border-radius: 12px;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.stat-number {
+  font-size: 28px;
+  font-weight: 700;
+  color: #3b82f6;
+  margin-bottom: 4px;
+}
+
+.stat-label {
+  font-size: 14px;
+  color: #6b7280;
+  font-weight: 500;
+}
+
+/* CSV Labels Section */
+.csv-labels-section {
+  margin-top: 32px;
+}
+
+.csv-labels-card {
+  background: linear-gradient(135deg, #dbeafe, #bfdbfe);
+  border: 1px solid #93c5fd;
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.csv-labels-card h3 {
+  color: #1e40af;
+  margin-bottom: 12px;
+  font-size: 18px;
+}
+
+.csv-labels-card p {
+  color: #374151;
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+
+.csv-labels-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: linear-gradient(135deg, #3b82f6, #1e40af);
+  color: white;
+  text-decoration: none;
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-weight: 600;
+  transition: all 0.2s ease;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.csv-labels-link:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(59, 130, 246, 0.3);
+}
+
+.csv-info {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid rgba(59, 130, 246, 0.2);
+}
+
+.csv-info h4 {
+  color: #1e40af;
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+
+.csv-info ul {
+  list-style: none;
+  padding: 0;
+}
+
+.csv-info li {
+  color: #374151;
+  padding: 4px 0;
+  font-size: 13px;
+}
+
+/* Coming Soon */
+.coming-soon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 400px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.coming-soon-content {
+  text-align: center;
+  max-width: 400px;
+}
+
+.coming-soon-content h2 {
+  font-size: 24px;
+  color: #1f2937;
+  margin-bottom: 12px;
+}
+
+.coming-soon-content p {
+  color: #6b7280;
+  margin-bottom: 24px;
+  font-size: 16px;
+}
+
+.coming-soon-features {
+  text-align: left;
+  background: #f9fafb;
+  padding: 20px;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+}
+
+.coming-soon-features h4 {
+  color: #374151;
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+
+.coming-soon-features ul {
+  list-style: none;
+  padding: 0;
+}
+
+.coming-soon-features li {
+  color: #6b7280;
+  padding: 4px 0;
+  font-size: 13px;
+}
+
+/* Buttons */
+.btn {
+  padding: 10px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #3b82f6, #1e40af);
+  color: white;
+}
+
+.btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+}
+
+.btn-secondary {
+  background: #f3f4f6;
+  color: #374151;
+  border: 1px solid #d1d5db;
+}
+
+.btn-secondary:hover {
+  background: #e5e7eb;
+}
+
+/* Responsividade */
+@media (max-width: 768px) {
+  .page-content {
+    padding: 16px 0px;
+  }
+  
+  .progress-indicator {
+    flex-direction: column;
+    gap: 12px;
+  }
+  
+  .step {
+    padding: 16px;
+  }
+  
+  .stats {
+    grid-template-columns: 1fr;
+  }
+  
+  .actions {
+    flex-direction: column;
+  }
+  
+  .csv-labels-card {
+    padding: 16px;
+  }
+}
+
+@media (max-width: 480px) {
+  .step-title {
+    font-size: 16px;
+  }
+  
+  .stat-number {
+    font-size: 24px;
+  }
+  
+  .coming-soon {
+    min-height: 300px;
+    padding: 20px;
+  }
+}

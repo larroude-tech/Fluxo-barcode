@@ -1,41 +1,98 @@
-# Prerequisites
-*.d
+# Dependencies
+node_modules/
+*/node_modules/
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
+# Build outputs
+build/
+dist/
+*/build/
+*/dist/
 
-# Precompiled Headers
-*.gch
-*.pch
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Linker files
-*.ilk
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
 
-# Debugger Files
-*.pdb
+# Coverage directory used by tools like istanbul
+coverage/
 
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
+# Environment variables (SENSÍVEIS - NÃO COMMITAR)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 
-# Fortran module files
-*.mod
-*.smod
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 
-# Executables
-*.exe
-*.out
-*.app
+# Temporary files
+temp/
+tmp/
+*.tmp
 
-# debug information files
-*.dwo
+# Backend specific - Arquivos temporários e gerados
+backend/uploads/*
+!backend/uploads/.gitkeep
+backend/output/*
+!backend/output/.gitkeep
+backend/temp-extract/
+backend/temp-extract-new/
+
+# Arquivos de backup e temporários
+*.backup
+*.bak
+server.js.backup
+
+# Arquivos de configuração local (específicos do desenvolvedor)
+# Ignora apenas configurações locais específicas
+backend/label-layout.json
+backend/layouts/teste1.json
+# IMPORTANTE: Default.json será versionado (não está no gitignore)
+
+# Package lock files (keep only one)
+yarn.lock
+
+# Arquivos de teste temporários (não os da pasta tests/)
+/test-data.xlsx
+/test-layout-po.json
+/test-preview-data.json
+/test-preview.csv
+
+# Pastas importantes (não versionar - contêm dados específicos do ambiente)
+config/
+docs/
+examples/
+templates/
+tests/
+
+# Arquivos importantes do backend (não versionar)
+backend/README_QR_CODES.md
+backend/nodemon.json
+backend/qr-code-finder.js
+backend/layouts/
+
+# Componentes React importantes (não versionar - específicos do ambiente)
+frontend/src/components/LabelLayoutEditor.js
+frontend/src/components/PrintAllPreviewModal.js

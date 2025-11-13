@@ -1,21 +1,71 @@
-﻿const express = require('express');
+﻿console.log('[INIT] Iniciando carregamento de módulos...');
+
+const express = require('express');
+console.log('[INIT] express carregado');
+
 const cors = require('cors');
+console.log('[INIT] cors carregado');
+
 const path = require('path');
 const fs = require('fs');
+console.log('[INIT] path e fs carregados');
+
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
+console.log('[INIT] dotenv configurado');
+
 const { Pool } = require('pg');
+console.log('[INIT] pg carregado');
+
 const QRCode = require('qrcode');
+console.log('[INIT] qrcode carregado');
+
 const JsBarcode = require('jsbarcode');
+console.log('[INIT] jsbarcode carregado');
+
 const { PDFDocument, rgb } = require('pdf-lib');
+console.log('[INIT] pdf-lib carregado');
+
 const archiver = require('archiver');
+console.log('[INIT] archiver carregado');
+
 const sharp = require('sharp');
+console.log('[INIT] sharp carregado');
+
 const axios = require('axios');
+console.log('[INIT] axios carregado');
+
 const { Label } = require('node-zpl');
-const QRCodeFinder = require('./qr-code-finder');
+console.log('[INIT] node-zpl carregado');
+
+// QRCodeFinder pode não existir, tornar opcional
+let QRCodeFinder;
+try {
+  QRCodeFinder = require('./qr-code-finder');
+  console.log('[INIT] qr-code-finder carregado');
+} catch (error) {
+  console.warn('[INIT] qr-code-finder não encontrado (continuando...):', error.message);
+  // Criar classe dummy
+  QRCodeFinder = class {
+    constructor() {}
+    find() { return null; }
+  };
+}
+
 const upload = {
   single: () => (req, res, next) => next()
 };
-const registerPostgresLabelsRoutes = require('./routes/postgres-labels');
+
+// Rotas PostgreSQL podem falhar se pool for null
+let registerPostgresLabelsRoutes;
+try {
+  registerPostgresLabelsRoutes = require('./routes/postgres-labels');
+  console.log('[INIT] routes/postgres-labels carregado');
+} catch (error) {
+  console.warn('[INIT] routes/postgres-labels não encontrado (continuando...):', error.message);
+  registerPostgresLabelsRoutes = () => {}; // Função vazia
+}
+
+console.log('[INIT] Todos os módulos principais carregados com sucesso');
 
 /**
  * Utilitários RFID para conversão hexadecimal
@@ -154,29 +204,64 @@ const createDatabasePool = () => {
   return new Pool(baseConfig);
 };
 
-const pool = createDatabasePool();
+// Criar pool de banco de dados (não bloqueia inicialização)
+let pool;
+try {
+  pool = createDatabasePool();
+  
+  pool.on('connect', (client) => {
+    const pid = client?.processID || 'n/a';
+    console.log(`[DB] Conexão estabelecida com PostgreSQL (pid=${pid})`);
+  });
 
-pool.on('connect', (client) => {
-  const pid = client?.processID || 'n/a';
-  console.log(`[DB] Conexão estabelecida com PostgreSQL (pid=${pid})`);
-});
+  pool.on('acquire', (client) => {
+    const pid = client?.processID || 'n/a';
+    console.log(`[DB] Cliente PostgreSQL adquirido do pool (pid=${pid})`);
+  });
 
-pool.on('acquire', (client) => {
-  const pid = client?.processID || 'n/a';
-  console.log(`[DB] Cliente PostgreSQL adquirido do pool (pid=${pid})`);
-});
-
-pool.on('error', (err) => {
-  console.error('[DB] Erro inesperado no pool PostgreSQL:', err);
-});
+  pool.on('error', (err) => {
+    console.error('[DB] Erro inesperado no pool PostgreSQL:', err);
+    // Não encerra o servidor se houver erro no pool
+  });
+  
+  console.log('[DB] Pool PostgreSQL criado com sucesso');
+  
+  // Testar conexão de forma assíncrona (não bloqueia startup)
+  pool.query('SELECT 1').then(() => {
+    console.log('[DB] ✅ Teste de conexão bem-sucedido');
+  }).catch((err) => {
+    console.warn('[DB] ⚠️ Teste de conexão falhou (continuando...):', err.message);
+  });
+} catch (error) {
+  console.error('[DB] Erro ao criar pool PostgreSQL:', error);
+  console.log('[DB] Continuando sem pool (aplicação pode funcionar sem DB)');
+  pool = null;
+}
 
 const app = express();
 const PORT = process.env.PORT || 3005;
 
-registerPostgresLabelsRoutes(app, pool);
+console.log(`[INIT] Inicializando servidor na porta ${PORT}`);
+console.log(`[INIT] NODE_ENV=${process.env.NODE_ENV || 'not set'}`);
 
-// Instanciar finder de QR codes
-const qrCodeFinder = new QRCodeFinder();
+// Registrar rotas (pode falhar se pool for null, mas não deve bloquear)
+try {
+  registerPostgresLabelsRoutes(app, pool);
+  console.log('[INIT] Rotas PostgreSQL registradas');
+} catch (error) {
+  console.error('[INIT] Erro ao registrar rotas PostgreSQL:', error);
+  console.log('[INIT] Continuando sem rotas PostgreSQL');
+}
+
+// Instanciar finder de QR codes (pode falhar se QRCodeFinder for dummy)
+let qrCodeFinder;
+try {
+  qrCodeFinder = new QRCodeFinder();
+  console.log('[INIT] QRCodeFinder instanciado');
+} catch (error) {
+  console.warn('[INIT] Erro ao instanciar QRCodeFinder (continuando...):', error.message);
+  qrCodeFinder = { find: () => null };
+}
 
 /**
  * Simplifica URL e codifica em base64 para QR code mais simples e legível
@@ -760,7 +845,16 @@ app.use(express.static('public'));
 
 // Rotas
 app.get('/', (req, res) => {
-  res.json({ message: 'Servidor LarroudÃ© RFID funcionando!' });
+  res.json({ message: 'Servidor Larroudé RFID funcionando!' });
+});
+
+// Health check endpoint para Cloud Run
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
 });
 
 // Configurar caminho base para busca de QR codes
@@ -2879,21 +2973,52 @@ async function generateLabelPDF(item) {
   return await pdfDoc.save();
 }
 
-// Importar módulo de conexão USB
-const USBPrinterConnection = require('./usb-printer-connection');
-const ZebraUSBConnection = require('./zebra-usb-connection');
-const PythonUSBIntegration = require('./python-usb-integration');
+// Importar módulo de conexão USB (lazy loading para evitar problemas no Cloud Run)
+let USBPrinterConnection, ZebraUSBConnection, PythonUSBIntegration;
+let usbConnection, zebraUSBConnection, pythonUSBIntegration;
 
-// RFIDPrinterTest removido - arquivo não é usado pela aba de etiquetas
+// Função para inicializar conexões USB apenas quando necessário
+const initUSBConnections = () => {
+  if (!usbConnection) {
+    try {
+      USBPrinterConnection = require('./usb-printer-connection');
+      ZebraUSBConnection = require('./zebra-usb-connection');
+      PythonUSBIntegration = require('./python-usb-integration');
+      usbConnection = new USBPrinterConnection();
+      zebraUSBConnection = new ZebraUSBConnection();
+      pythonUSBIntegration = new PythonUSBIntegration();
+      console.log('[USB] Conexões USB inicializadas com sucesso');
+    } catch (error) {
+      console.warn('[USB] Aviso: Não foi possível inicializar conexões USB (normal no Cloud Run):', error.message);
+      // Criar objetos dummy para evitar erros
+      usbConnection = { 
+        isConnected: false, 
+        listPorts: async () => ({ allPorts: [], printerPorts: [] }),
+        connect: async () => { throw new Error('USB não disponível no Cloud Run'); },
+        disconnect: async () => {},
+        getConnectionInfo: () => ({ connected: false })
+      };
+      zebraUSBConnection = { 
+        isConnected: false, 
+        detectPrinters: async () => ({ serial: [], windows: [], usb: [] }),
+        connect: async () => { throw new Error('USB não disponível no Cloud Run'); },
+        disconnect: async () => {}
+      };
+      pythonUSBIntegration = { 
+        listPrinters: async () => ({ success: false, printers: [] }),
+        connect: async () => { throw new Error('USB não disponível no Cloud Run'); }
+      };
+    }
+  }
+  return { usbConnection, zebraUSBConnection, pythonUSBIntegration };
+};
 
-// Instância global da conexão USB (fallback)
-const usbConnection = new USBPrinterConnection();
-
-// Instância global da conexão Zebra USB (fallback)
-const zebraUSBConnection = new ZebraUSBConnection();
-
-// Instância global da integração Python USB (método principal)
-const pythonUSBIntegration = new PythonUSBIntegration();
+// Inicializar conexões USB (pode falhar silenciosamente no Cloud Run)
+try {
+  initUSBConnections();
+} catch (error) {
+  console.warn('[USB] Erro ao inicializar conexões USB na startup (continuando...):', error.message);
+}
 
 // ========================================
 // ENDPOINTS PARA TESTE DE IMPRESSORA RFID
@@ -5080,8 +5205,49 @@ app.use((error, req, res, next) => {
   res.status(500).json({ error: 'Erro interno do servidor' });
 });
 
-app.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
-});
+// Iniciar servidor com tratamento de erros robusto
+console.log('[STARTUP] Iniciando servidor...');
+console.log(`[STARTUP] PORT=${PORT}`);
+console.log(`[STARTUP] NODE_ENV=${process.env.NODE_ENV || 'not set'}`);
+
+let server;
+try {
+  server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`✅ Servidor rodando na porta ${PORT}`);
+    console.log(`✅ Servidor escutando em 0.0.0.0:${PORT}`);
+    console.log(`✅ Health check disponível em http://0.0.0.0:${PORT}/health`);
+  });
+
+  server.on('error', (error) => {
+    console.error('❌ Erro ao iniciar servidor:', error);
+    console.error('❌ Stack:', error.stack);
+    process.exit(1);
+  });
+
+  server.on('listening', () => {
+    console.log('✅ Servidor está escutando!');
+  });
+
+  // Garantir que o processo não termine silenciosamente
+  process.on('uncaughtException', (error) => {
+    console.error('❌ Erro não capturado:', error);
+    console.error('❌ Stack:', error.stack);
+    process.exit(1);
+  });
+
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Promise rejeitada não tratada:', reason);
+    if (reason && reason.stack) {
+      console.error('❌ Stack:', reason.stack);
+    }
+    process.exit(1);
+  });
+
+  console.log('[STARTUP] Servidor configurado com sucesso');
+} catch (error) {
+  console.error('❌ ERRO CRÍTICO ao iniciar servidor:', error);
+  console.error('❌ Stack:', error.stack);
+  process.exit(1);
+}
 
 module.exports = app;

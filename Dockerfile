@@ -51,7 +51,6 @@ FROM node:20-bullseye-slim AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
-ENV PORT=3005
 
 # Copy backend (code + node_modules)
 COPY --from=backend-deps /app/backend ./backend
@@ -63,7 +62,9 @@ COPY --from=frontend-builder /app/frontend/build ./backend/public/app
 RUN groupadd -r nodejs && useradd -r -g nodejs nodejs
 USER nodejs
 
-EXPOSE 3005
+# Cloud Run will set PORT automatically (default: 8080)
+# The app uses process.env.PORT || 3005, so it will use Cloud Run's PORT
+EXPOSE 8080
 
 CMD ["node", "backend/server.js"]
 

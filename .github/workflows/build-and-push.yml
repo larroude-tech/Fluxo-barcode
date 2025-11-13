@@ -67,28 +67,36 @@ jobs:
         run: |
           docker push "${IMAGE_URI}"
 
+      - name: Prepare Cloud Run secrets
+        id: prepare_secrets
+        run: |
+          SECRETS=""
+          [ -n "${{ secrets.DATABASE_URL }}" ] && SECRETS="${SECRETS}DATABASE_URL=${{ secrets.DATABASE_URL }}:latest"$'\n'
+          [ -n "${{ secrets.PGHOST }}" ] && SECRETS="${SECRETS}PGHOST=${{ secrets.PGHOST }}:latest"$'\n'
+          [ -n "${{ secrets.PGPORT }}" ] && SECRETS="${SECRETS}PGPORT=${{ secrets.PGPORT }}:latest"$'\n'
+          [ -n "${{ secrets.PGUSER }}" ] && SECRETS="${SECRETS}PGUSER=${{ secrets.PGUSER }}:latest"$'\n'
+          [ -n "${{ secrets.PGPASSWORD }}" ] && SECRETS="${SECRETS}PGPASSWORD=${{ secrets.PGPASSWORD }}:latest"$'\n'
+          [ -n "${{ secrets.PGDATABASE }}" ] && SECRETS="${SECRETS}PGDATABASE=${{ secrets.PGDATABASE }}:latest"$'\n'
+          echo "secrets<<EOF" >> $GITHUB_OUTPUT
+          echo -n "${SECRETS}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Deploy to Cloud Run
         id: deploy
         uses: google-github-actions/deploy-cloudrun@v2
         with:
-          service: ${{ secrets.CLOUD_RUN_SERVICE }}
+          service: ${{ secrets.CLOUD_RUN_SERVICE || env.IMAGE_NAME }}
           region: ${{ env.EFFECTIVE_GCP_REGION || env.DEFAULT_GCP_REGION }}
           image: ${{ env.IMAGE_URI }}
           env_vars: |
             NODE_ENV=production
-            PORT=3005
-          secrets: |
-            DATABASE_URL=${{ secrets.DATABASE_URL }}
-            PGHOST=${{ secrets.PGHOST }}
-            PGPORT=${{ secrets.PGPORT }}
-            PGUSER=${{ secrets.PGUSER }}
-            PGPASSWORD=${{ secrets.PGPASSWORD }}
-            PGDATABASE=${{ secrets.PGDATABASE }}
+          secrets: ${{ steps.prepare_secrets.outputs.secrets }}
+          flags: '--service-account=data-github-integration@larroude-data-prod.iam.gserviceaccount.com --timeout=300 --cpu=1 --memory=512Mi'
 
       - name: Export deployment info
         run: |
           REGION="${GCP_REGION:-$DEFAULT_GCP_REGION}"
           echo "Imagem publicada e deploy concluído:"
-          echo "  Serviço: ${{ secrets.CLOUD_RUN_SERVICE }}"
+          echo "  Serviço: ${{ secrets.CLOUD_RUN_SERVICE || env.IMAGE_NAME }}"
           echo "  Região:  ${REGION}"
 

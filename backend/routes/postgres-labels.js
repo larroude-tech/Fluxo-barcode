@@ -87,6 +87,22 @@ module.exports = (app, pool) => {
       const data = rows.map(normalizeLabelRow);
 
       console.log(`[DB] [LABELS] ${data.length} registro(s) retornado(s) para PO=${po}${sku ? `, SKU=${sku}` : ''}`);
+      
+      // Se não houver dados, retornar mensagem clara
+      if (data.length === 0) {
+        const message = sku 
+          ? `Nenhum dado encontrado para PO ${po} e SKU ${sku}`
+          : `Nenhum dado encontrado para PO ${po}`;
+        console.warn(`[DB] [LABELS] ⚠️ ${message}`);
+        return res.status(404).json({ 
+          error: message,
+          data: [],
+          totalRecords: 0,
+          po,
+          sku: sku || null
+        });
+      }
+
       res.json({
         message: 'Dados carregados para PO ' + po,
         data,

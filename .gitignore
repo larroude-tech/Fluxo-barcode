@@ -94,4 +94,4 @@ backend/qr-code-finder.js
 backend/layouts/
 
 # Componentes React específicos do ambiente (manter vazio se não utilizar)
-# frontend/src/components/PrintAllPreviewModal.js
+frontend/src/components/PrintAllPreviewModal.js

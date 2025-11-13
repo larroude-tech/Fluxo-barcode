@@ -8,7 +8,7 @@ const HomePage = ({ setActiveTab }) => {
     {
       id: 'labels',
       title: 'Gerar Etiquetas',
-      description: 'Upload CSV e impressão de etiquetas RFID',
+      description: 'Selecionar dados do PostgreSQL e imprimir etiquetas',
       icon: Tag,
       color: 'blue',
       action: () => setActiveTab('labels')
@@ -25,7 +25,7 @@ const HomePage = ({ setActiveTab }) => {
   ];
 
   const systemFeatures = [
-    'Upload de arquivos CSV',
+    'Seleção dinâmica por PO direto do PostgreSQL',
     'Geração automática de etiquetas',
     'Impressão individual com controle de quantidade',
     'Layout profissional da Larroud',
@@ -34,7 +34,7 @@ const HomePage = ({ setActiveTab }) => {
   ];
 
   const [usbOnline, setUsbOnline] = useState(false);
-  const API_BASE = 'http://localhost:3002/api';
+  const API_BASE = 'http://localhost:3005/api';
 
   useEffect(() => {
     const fetchUSBStatus = async () => {

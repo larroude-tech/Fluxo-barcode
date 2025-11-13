@@ -2,12 +2,12 @@ import React, { useState } from 'react';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import HomePage from './components/HomePage';
-import FileUpload from './components/FileUpload';
+import DataSelector from './components/FileUpload';
 import PreviewSection from './components/PreviewSection';
 import GenerateSection from './components/GenerateSection';
 import PrinterConfig from './components/PrinterConfig';
 import { ToastContainer, toast } from 'react-toastify';
-import { Upload, Eye, Download } from 'lucide-react';
+import { Database, Eye, Download } from 'lucide-react';
 import 'react-toastify/dist/ReactToastify.css';
 import './App.css';
 import './components/components.css';
@@ -20,11 +20,15 @@ function App() {
   const [activeTab, setActiveTab] = useState('home');
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  const handleFileUpload = (data) => {
+  const handleDataLoaded = (data) => {
     setExcelData(data);
     setPreviews([]);
     setCurrentStep(2);
-    toast.success(`Arquivo processado com sucesso! ${data.length} registros encontrados.`);
+    if (data && data.length) {
+      toast.success(`${data.length} registros carregados.`);
+    } else {
+      toast.warn('Nenhum registro encontrado para a seleção atual.');
+    }
   };
 
   const handlePreviewGenerated = (previewData) => {
@@ -58,7 +62,7 @@ function App() {
               <div className="progress-indicator">
                 <div className={`step-indicator ${currentStep >= 1 ? 'active' : ''}`}>
                   <div className="step-number">1</div>
-                  <span>Upload Excel</span>
+                  <span>Selecione a PO</span>
                 </div>
                 <div className={`step-indicator ${currentStep >= 2 ? 'active' : ''}`}>
                   <div className="step-number">2</div>
@@ -70,14 +74,14 @@ function App() {
                 </div>
               </div>
 
-              {/* Passo 1: Upload do arquivo */}
+              {/* Passo 1: Seleção da PO */}
               {currentStep === 1 && (
                 <div className="step">
                   <div className="step-title">
-                    <Upload size={20} />
-                    Upload do Arquivo Excel
+                    <Database size={20} />
+                    Selecione a PO
                   </div>
-                  <FileUpload onFileUpload={handleFileUpload} />
+                  <DataSelector onDataLoaded={handleDataLoaded} />
                 </div>
               )}
 
@@ -94,7 +98,7 @@ function App() {
                   />
                   <div className="actions">
                     <button className="btn btn-secondary" onClick={resetApp}>
-                      Voltar ao Upload
+                      Voltar à Seleção
                     </button>
                   </div>
                 </div>
@@ -142,30 +146,6 @@ function App() {
                   </div>
                 </div>
               )}
-
-              {/* Gerenciador CSV */}
-              <div className="csv-labels-section">
-                <div className="csv-labels-card">
-                  <h3>🏷️ Gerenciador Avançado de Etiquetas</h3>
-                  <p>Acesse o gerenciador completo da Larroudé com lista de impressão individual e controle de quantidade:</p>
-                  <button 
-                    className="btn btn-primary csv-labels-link"
-                    onClick={() => window.open('/csv-labels.html', '_blank')}
-                  >
-                    🏷️ Abrir Gerenciador de Etiquetas
-                  </button>
-                  <div className="csv-info">
-                    <h4>Funcionalidades:</h4>
-                    <ul>
-                      <li>📋 Lista de todos os itens do CSV</li>
-                      <li>🖨️ Impressão individual com controle de quantidade</li>
-                      <li>🎯 Novo layout ZPL otimizado (PR2,2, sem RFID)</li>
-                      <li>💰 Economia máxima de material</li>
-                      <li>✅ Sistema sem VOID garantido</li>
-                    </ul>
-                  </div>
-                </div>
-              </div>
             </div>
           </div>
         );

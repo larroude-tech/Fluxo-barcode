@@ -64,7 +64,7 @@ const PrinterConfig = () => {
     autoConnect: false
   });
 
-  const API_BASE = 'http://localhost:3002/api';
+  const API_BASE = 'http://localhost:3005/api';
 
   // Verificar status dos serviços ao carregar
   useEffect(() => {

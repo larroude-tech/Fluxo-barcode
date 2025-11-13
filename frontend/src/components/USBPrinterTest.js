@@ -12,7 +12,7 @@ const USBPrinterTest = () => {
   const [error, setError] = useState(null);
   const [zplCommand, setZplCommand] = useState('^XA^FO50,50^A0N,50,50^FDTeste USB^FS^XZ');
 
-  const API_BASE = 'http://localhost:3002/api';
+  const API_BASE = 'http://localhost:3005/api';
 
   // Carregar portas disponíveis
   const loadPorts = async () => {

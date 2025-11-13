@@ -1,0 +1,81 @@
+# GitHub Actions workflow to build and push the Fluxo Barcode Docker image to
+# Google Artifact Registry (or Container Registry). Requires the following
+# repository secrets:
+#   GCP_PROJECT_ID        → GCP project that hosts the registry
+#   GCP_REGION            → e.g. southamerica-east1 (must match Artifact Registry)
+#   GCP_SA_KEY            → JSON service account key with Artifact Registry Writer
+#   ARTIFACT_REPOSITORY   → Artifact Registry repo (e.g. fluxo-images)
+#   DATABASE_URL or PGHOST / PGUSER / PGPASSWORD / PGDATABASE (optional for deploy)
+#
+# Example deploy command (Cloud Run):
+#   gcloud run deploy fluxo-barcode --image "$IMAGE_URI" --region "$GCP_REGION" \
+#     --set-env-vars DATABASE_URL=$DATABASE_URL ...
+
+name: Build & Push Docker image
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: fluxo-barcode
+
+jobs:
+  build-push-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Cloud authentication
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker "${{ secrets.GCP_REGION }}-docker.pkg.dev" --quiet
+
+      - name: Build Docker image
+        run: |
+          IMAGE_TAG="${{ github.sha }}"
+          IMAGE_URI="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.ARTIFACT_REPOSITORY }}/${IMAGE_NAME}:${IMAGE_TAG}"
+          echo "IMAGE_URI=${IMAGE_URI}" >> $GITHUB_ENV
+          docker build -t "${IMAGE_URI}" .
+
+      - name: Push image to Artifact Registry
+        run: |
+          docker push "${IMAGE_URI}"
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ secrets.CLOUD_RUN_SERVICE }}
+          region: ${{ secrets.GCP_REGION }}
+          image: ${{ env.IMAGE_URI }}
+          env_vars: |
+            NODE_ENV=production
+            PORT=3005
+          secrets: |
+            DATABASE_URL=${{ secrets.DATABASE_URL }}
+            PGHOST=${{ secrets.PGHOST }}
+            PGPORT=${{ secrets.PGPORT }}
+            PGUSER=${{ secrets.PGUSER }}
+            PGPASSWORD=${{ secrets.PGPASSWORD }}
+            PGDATABASE=${{ secrets.PGDATABASE }}
+
+      - name: Export deployment info
+        run: |
+          echo "Imagem publicada e deploy concluído:"
+          echo "  Serviço: ${{ secrets.CLOUD_RUN_SERVICE }}"
+          echo "  Região:  ${{ secrets.GCP_REGION }}"
+

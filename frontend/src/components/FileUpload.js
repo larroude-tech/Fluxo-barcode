@@ -1,138 +1,207 @@
-import React, { useState, useCallback } from 'react';
-import { useDropzone } from 'react-dropzone';
+import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
-import { Upload, FileSpreadsheet, AlertCircle } from 'lucide-react';
+import { Database, Loader2, RefreshCcw } from 'lucide-react';
 import { toast } from 'react-toastify';
+import './components.css';
 
-const FileUpload = ({ onFileUpload }) => {
-  const [isUploading, setIsUploading] = useState(false);
-  const [error, setError] = useState(null);
+const DataSelector = ({ onDataLoaded }) => {
+  const [poList, setPoList] = useState([]);
+  const [poLoading, setPoLoading] = useState(false);
+  const [poError, setPoError] = useState(null);
 
-  const processFile = useCallback(async (file) => {
-    setIsUploading(true);
-    setError(null);
+  const [selectedPo, setSelectedPo] = useState('');
+  const [rawData, setRawData] = useState([]);
+  const [dataLoading, setDataLoading] = useState(false);
 
-    try {
-      const formData = new FormData();
-      formData.append('excel', file);
+  const [skuFilter, setSkuFilter] = useState('ALL');
 
-      const response = await axios.post('/api/upload-excel', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-        onUploadProgress: (progressEvent) => {
-          const percentCompleted = Math.round(
-            (progressEvent.loaded * 100) / progressEvent.total
-          );
-          console.log(`Upload progress: ${percentCompleted}%`);
-        },
-      });
-
-      if (response.data && response.data.data) {
-        onFileUpload(response.data.data);
-      } else {
-        throw new Error('Resposta inválida do servidor');
+  const skuOptions = useMemo(() => {
+    const skus = new Set();
+    rawData.forEach((item) => {
+      if (item.VPN) {
+        skus.add(item.VPN);
       }
-    } catch (error) {
-      console.error('Erro no upload:', error);
-      const errorMessage = error.response?.data?.error || 'Erro ao processar arquivo';
-      setError(errorMessage);
-      toast.error(errorMessage);
-    } finally {
-      setIsUploading(false);
-    }
-  }, [onFileUpload]);
+    });
+    return Array.from(skus).sort();
+  }, [rawData]);
 
-  const onDrop = useCallback((acceptedFiles, rejectedFiles) => {
-    if (rejectedFiles.length > 0) {
-      const error = rejectedFiles[0].errors[0];
-      setError(`Arquivo rejeitado: ${error.message}`);
-      toast.error(`Arquivo rejeitado: ${error.message}`);
+  const [poSearch, setPoSearch] = useState('');
+
+  const filteredPoList = useMemo(() => {
+    if (!poSearch.trim()) {
+      return poList;
+    }
+    const search = poSearch.toLowerCase().trim();
+    return poList.filter((po) => po && po.toString().toLowerCase().includes(search));
+  }, [poList, poSearch]);
+
+  useEffect(() => {
+    // Atualiza seleção automaticamente quando o texto corresponde a uma PO existente
+    const exactMatch = poList.find((po) => po && po.toString().toLowerCase() === poSearch.toLowerCase());
+    if (exactMatch) {
+      setSelectedPo(exactMatch);
+    }
+  }, [poSearch, poList]);
+
+  useEffect(() => {
+    const fetchPos = async () => {
+      setPoLoading(true);
+      setPoError(null);
+      try {
+        const { data } = await axios.get('/api/purchase-orders');
+        setPoList(data?.data || []);
+      } catch (error) {
+        console.error(error);
+        const message = error.response?.data?.error || error.message || 'Não foi possível carregar as POs';
+        setPoError(message);
+        toast.error(message);
+      } finally {
+        setPoLoading(false);
+      }
+    };
+
+    fetchPos();
+  }, []);
+
+  useEffect(() => {
+    if (!selectedPo) {
       return;
     }
 
-    if (acceptedFiles.length > 0) {
-      processFile(acceptedFiles[0]);
-    }
-  }, [processFile]);
+    const fetchData = async () => {
+      setDataLoading(true);
+      try {
+        const { data } = await axios.get('/api/labels', {
+          params: { po: selectedPo }
+        });
 
-  const { getRootProps, getInputProps, isDragActive, isDragReject } = useDropzone({
-    onDrop,
-    accept: {
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
-      'application/vnd.ms-excel': ['.xls'],
-      'text/csv': ['.csv']
-    },
-    maxFiles: 1,
-    disabled: isUploading
-  });
+        const rows = data?.data || [];
+        setRawData(rows);
+        setSkuFilter('ALL');
+        onDataLoaded(rows, { po: selectedPo });
+        toast.success(
+          rows.length
+            ? `${rows.length} itens carregados para PO ${selectedPo}`
+            : `PO ${selectedPo} sem itens na view`
+        );
+      } catch (error) {
+        console.error(error);
+        const message = error.response?.data?.error || error.message || 'Erro ao carregar itens dessa PO';
+        toast.error(message);
+        setRawData([]);
+        onDataLoaded([], { po: selectedPo, error: true });
+      } finally {
+        setDataLoading(false);
+      }
+    };
+
+    fetchData();
+  }, [selectedPo, onDataLoaded]);
+
+  useEffect(() => {
+    if (!rawData.length) {
+      return;
+    }
+
+    if (skuFilter === 'ALL') {
+      onDataLoaded(rawData, { po: selectedPo });
+      return;
+    }
+
+    const filtered = rawData.filter((item) => item.VPN === skuFilter);
+    onDataLoaded(filtered, { po: selectedPo, sku: skuFilter });
+  }, [skuFilter, rawData, onDataLoaded, selectedPo]);
+
+  const retryPoList = () => {
+    setPoList([]);
+    setSelectedPo('');
+    setRawData([]);
+    setSkuFilter('ALL');
+    setPoError(null);
+    onDataLoaded(null);
+  };
 
   return (
     <div className="card">
-      <div
-        {...getRootProps()}
-        className={`upload-zone ${
-          isDragActive ? 'dragover' : ''
-        } ${
-          isDragReject ? 'drag-reject' : ''
-        } ${
-          isUploading ? 'uploading' : ''
-        }`}
-      >
-        <input {...getInputProps()} />
-        
-        {isUploading ? (
-          <div className="upload-content">
-            <div className="spinner"></div>
-            <div className="upload-text">Processando arquivo...</div>
-            <div className="upload-subtext">Por favor, aguarde</div>
-          </div>
-        ) : (
-          <div className="upload-content">
-            {isDragActive ? (
-              <>
-                <Upload className="upload-icon" size={48} />
-                <div className="upload-text">Solte o arquivo aqui...</div>
-              </>
-            ) : (
-              <>
-                <FileSpreadsheet className="upload-icon" size={48} />
-                <div className="upload-text">
-                  Arraste e solte seu arquivo Excel ou CSV aqui
-                </div>
-                <div className="upload-subtext">
-                  ou clique para selecionar um arquivo (.xlsx, .xls, .csv)
-                </div>
-              </>
-            )}
-          </div>
-        )}
+      <div className="data-selector-header">
+        <h3>
+          <Database size={18} />
+          Selecione a PO
+        </h3>
+        <button
+          className="btn btn-icon"
+          onClick={retryPoList}
+          title="Recarregar lista de POs"
+          disabled={poLoading}
+        >
+          <RefreshCcw size={16} />
+        </button>
       </div>
 
-      {error && (
-        <div className="error">
-          <AlertCircle size={16} />
-          {error}
+      <div className="form-group">
+        <label htmlFor="po-select">Escolha a PO (ordem_pedido)</label>
+        <input
+          type="text"
+          className="input"
+          placeholder="Pesquisar PO..."
+          value={poSearch}
+          onChange={(event) => setPoSearch(event.target.value)}
+          list="po-options"
+        />
+        <datalist id="po-options">
+          {filteredPoList.map((po) => (
+            <option key={po} value={po} />
+          ))}
+        </datalist>
+        <div className="select-wrapper">
+          {poLoading && <Loader2 className="spinner-inline" size={18} />}
+          <select
+            id="po-select"
+            value={selectedPo}
+            onChange={(event) => setSelectedPo(event.target.value)}
+            disabled={poLoading || !filteredPoList.length}
+          >
+            <option value="">Selecione uma PO...</option>
+            {filteredPoList.map((po) => (
+              <option key={po} value={po}>
+                {po}
+              </option>
+            ))}
+          </select>
+        </div>
+        {poError && <p className="error">{poError}</p>}
+      </div>
+
+      {rawData.length > 0 && (
+        <div className="form-group">
+          <label htmlFor="sku-select">Filtrar por SKU (opcional)</label>
+          <div className="select-wrapper">
+            {dataLoading && <Loader2 className="spinner-inline" size={18} />}
+            <select
+              id="sku-select"
+              value={skuFilter}
+              onChange={(event) => setSkuFilter(event.target.value)}
+              disabled={dataLoading}
+            >
+              <option value="ALL">Todos os itens ({rawData.length})</option>
+              {skuOptions.map((sku) => (
+                <option key={sku} value={sku}>
+                  {sku}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       )}
 
-      <div className="info">
-        <h4>Formato esperado do arquivo Excel/CSV (entrada):</h4>
-        <ul>
-          <li><strong>NAME</strong> (obrigatório) - Nome completo do produto</li>
-          <li><strong>DESCRIPTION</strong> (obrigatório)</li>
-          <li><strong>SKU_VARIANT</strong> (preferencial) - SKU completo com tamanho (ex: L415-STEL-5.0-WHIT-2498)</li>
-          <li><strong>SKU</strong> (alternativo) - SKU padrão (ex: L264-HANA-5.0-WHIT-1120)</li>
-          <li><strong>SKU_MAE</strong> (alternativo) - SKU base do modelo</li>
-          <li><strong>BARCODE</strong> (obrigatório)</li>
-          <li><strong>REF</strong> (obrigatório)</li>
-        </ul>
-        <p><small><strong>Novo Padrão:</strong> Use <strong>SKU_VARIANT</strong> para melhor precisão (contém tamanho e cor específicos).</small></p>
-        <p><small><strong>Campos Opcionais:</strong> Se já preenchidos, o sistema usa diretamente: <em>STYLE_NAME, VPN, COLOR, SIZE, PO, LOCAL</em></small></p>
-        <p><small><strong>Delimitador:</strong> Aceita vírgula (,) ou ponto-e-vírgula (;) - detectado automaticamente</small></p>
-      </div>
+      {dataLoading && (
+        <div className="info">
+          <Loader2 className="spinner-inline" size={16} />
+          Carregando itens da view...
+        </div>
+      )}
     </div>
   );
 };
 
-export default FileUpload;
+export default DataSelector;

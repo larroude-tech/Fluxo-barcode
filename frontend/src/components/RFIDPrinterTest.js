@@ -12,7 +12,7 @@ const RFIDPrinterTest = () => {
   const [status, setStatus] = useState('idle');
   const [error, setError] = useState(null);
 
-  const API_BASE = 'http://localhost:3002/api/rfid';
+  const API_BASE = 'http://localhost:3005/api/rfid';
 
   // Verificar status do serviço
   useEffect(() => {

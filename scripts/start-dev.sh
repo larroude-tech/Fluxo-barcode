@@ -8,9 +8,11 @@ echo ""
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
 
-echo "[1/2] Iniciando Backend na porta 3002..."
-cd "$PROJECT_ROOT/backend"
-npm run dev &
+echo "[1/2] Iniciando Backend na porta 3005..."
+(
+  cd "$PROJECT_ROOT/backend" &&
+  npm run dev
+) &
 BACKEND_PID=$!
 
 sleep 3
@@ -25,7 +27,7 @@ echo "========================================"
 echo "Servicos iniciados em modo desenvolvimento!"
 echo "========================================"
 echo ""
-echo "Backend: http://localhost:3002 (com hot reload)"
+echo "Backend: http://localhost:3005 (com hot reload)"
 echo "Frontend: http://localhost:3000"
 echo ""
 echo "PIDs: Backend=$BACKEND_PID, Frontend=$FRONTEND_PID"

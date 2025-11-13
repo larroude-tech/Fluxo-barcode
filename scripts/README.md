@@ -11,11 +11,11 @@ Inicia o sistema completo (backend + frontend) em janelas separadas.
 - Duplo clique no arquivo ou execute: `scripts\iniciar_sistema.bat`
 - O script navega automaticamente para a raiz do projeto antes de iniciar os serviços
 
-### limpar_porta_3002.bat
-Limpa a porta 3002 (backend) encerrando processos que estão usando ela.
+### limpar_porta_3005.bat
+Limpa a porta 3005 (backend) encerrando processos que estão usando ela.
 
 **Uso:**
-- Execute quando precisar liberar a porta 3002
+- Execute quando precisar liberar a porta 3005
 - Útil quando o backend não inicia devido à porta ocupada
 
 ## Notas Importantes

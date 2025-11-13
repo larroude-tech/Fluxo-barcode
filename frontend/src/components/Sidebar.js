@@ -41,7 +41,7 @@ const Sidebar = ({ activeTab, setActiveTab, isOpen, setIsOpen }) => {
   };
 
   const [usbOnline, setUsbOnline] = useState(false);
-  const API_BASE = 'http://localhost:3002/api';
+  const API_BASE = 'http://localhost:3005/api';
 
   useEffect(() => {
     const check = async () => {

@@ -1,30 +1,40 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { Eye, AlertCircle, ZoomIn, Download, Info, Printer, List, Search, X, Grid3X3, LayoutList, Barcode, Package, Palette, Ruler, Hash, FileText, Settings } from 'lucide-react';
+import { AlertCircle, ZoomIn, Download, Info, Printer, List, Search, X, Grid3X3, LayoutList, Barcode, Package, Palette, Ruler, Hash, FileText, Settings } from 'lucide-react';
 import { toast } from 'react-toastify';
-import PrintAllPreviewModal from './PrintAllPreviewModal';
 import LabelLayoutEditor from './LabelLayoutEditor';
 import './PrintList.css';
 
 // Componente atualizado para exibir todas as etiquetas em tamanho real
 
 const PreviewSection = ({ data, onPreviewGenerated }) => {
-  const [previews, setPreviews] = useState([]);
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [singlePreview, setSinglePreview] = useState(null);
   const [error, setError] = useState(null);
   const [selectedPreview, setSelectedPreview] = useState(null);
   const [showModal, setShowModal] = useState(false);
-  const [totalLabels, setTotalLabels] = useState(0);
   const [viewMode, setViewMode] = useState('preview'); // 'preview' ou 'list'
   const [listLayout, setListLayout] = useState('list'); // 'list' ou 'grid'
   const [printingItems, setPrintingItems] = useState(new Set());
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedItem, setSelectedItem] = useState(null);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
-  const [isPrintingAll, setIsPrintingAll] = useState(false);
-  const [showPrintAllModal, setShowPrintAllModal] = useState(false);
   const [showLayoutEditor, setShowLayoutEditor] = useState(false);
   const [layoutEditorPreview, setLayoutEditorPreview] = useState(null);
+  const [isPrintingAll, setIsPrintingAll] = useState(false);
+
+  const previews = useMemo(() => {
+    if (!singlePreview || !data || data.length === 0) {
+      return [];
+    }
+    return [{ preview: singlePreview, data: data[0] }];
+  }, [singlePreview, data]);
+
+  const totalLabels = useMemo(() => {
+    if (!data || data.length === 0) {
+      return 0;
+    }
+    return data.reduce((sum, item) => sum + (parseInt(item.QTY, 10) || 1), 0);
+  }, [data]);
 
   // Filtrar dados baseado no termo de pesquisa
   const filteredData = useMemo(() => {
@@ -75,7 +85,7 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
     return item.BARCODE || item.VPN?.replace(/-/g, '')?.substring(0, 12) || 'N/A';
   };
 
-  const normalizeItems = (items) => {
+  const normalizeItems = useCallback((items) => {
     return (items || []).map((row) => {
       const sku = (row.SKU || row.VPN || '').toString().trim();
       const skuParts = sku.split('-');
@@ -84,9 +94,8 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
       const colorCode = skuParts.length >= 4 ? skuParts[3] : '';
       const color = row.COLOR || colorCode;
       
-      // Debug: verificar se PO e LOCAL estão presentes
-      if (row.PO || row.LOCAL) {
-        console.log(`🔍 Frontend normalizeItems - PO: "${row.PO}", LOCAL: "${row.LOCAL}"`);
+      if (row.PO) {
+        console.log(`🔍 Frontend normalizeItems - PO: "${row.PO}"`);
       }
       
       return {
@@ -94,74 +103,61 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
         SKU: sku,
         SIZE: size || row.SIZE || '',
         COLOR: color,
-        // Garantir que PO e LOCAL sejam preservados
         PO: row.PO || '',
         LOCAL: row.LOCAL || ''
       };
     });
-  };
+  }, []);
 
-  const generatePreviews = async () => {
-    setIsGenerating(true);
-    setError(null);
+  const fetchSinglePreview = useCallback(async (item) => {
+    const normalized = normalizeItems([item]);
+    const response = await axios.post('/api/generate-preview', {
+      data: normalized
+    }, {
+      timeout: 30000
+    });
+    const previewImage = response.data?.previews?.[0]?.preview || null;
+    return previewImage;
+  }, [normalizeItems]);
 
-    console.log('DEBUG: Iniciando geração de previews');
-    console.log('DEBUG: Dados recebidos:', data);
+  useEffect(() => {
+    let cancelled = false;
 
-    try {
-      const normalized = normalizeItems(data);
-      // Debug: verificar se PO e LOCAL estão nos dados normalizados
-      if (normalized.length > 0) {
-        console.log(`🔍 Frontend - Primeiro item normalizado:`, normalized[0]);
-        console.log(`🔍 Frontend - PO: "${normalized[0].PO}", LOCAL: "${normalized[0].LOCAL}"`);
+    const loadSinglePreview = async () => {
+      if (!data || data.length === 0) {
+        setSinglePreview(null);
+        setLayoutEditorPreview(null);
+        return;
       }
       
-      const response = await axios.post('/api/generate-preview', {
-        data: normalized
-      });
-
-      console.log('DEBUG: Resposta do servidor:', response.data);
-
-      if (response.data && response.data.previews) {
-        console.log('DEBUG: Previews encontrados:', response.data.previews.length);
-        setPreviews(response.data.previews);
-        setTotalLabels(response.data.totalLabels || 0);
-        onPreviewGenerated(response.data.previews);
-        toast.success(`${response.data.previews.length} previews gerados com sucesso!`);
-      } else {
-        console.log('DEBUG: Resposta inválida:', response.data);
-        throw new Error('Resposta inválida do servidor');
-      }
-    } catch (error) {
-      console.error('DEBUG: Erro ao gerar preview:', error);
-      console.error('DEBUG: Resposta de erro:', error.response?.data);
-      const errorMessage = error.response?.data?.error || error.message || 'Erro ao gerar preview';
-      setError(errorMessage);
-      
-      // Mostrar erro mas permitir continuar usando o sistema
-      toast.error(
-        <div>
-          <strong>Erro ao Gerar Preview</strong>
-          <p style={{ margin: '8px 0', fontSize: '14px' }}>{errorMessage}</p>
-          <p style={{ margin: '8px 0', fontSize: '12px', color: '#666' }}>
-            Você pode tentar novamente ou editar o layout mesmo sem preview.
-          </p>
-        </div>,
-        { 
-          autoClose: 6000,
-          style: { fontSize: '14px' }
+      try {
+        const previewImage = await fetchSinglePreview(data[0]);
+        if (!cancelled) {
+          setSinglePreview(previewImage);
+          setLayoutEditorPreview(previewImage);
         }
-      );
-    } finally {
-      setIsGenerating(false);
-    }
-  };
+      } catch (error) {
+        console.warn('Não foi possível carregar preview da etiqueta:', error);
+        if (!cancelled) {
+          setSinglePreview(null);
+          setLayoutEditorPreview(null);
+        }
+      }
+    };
+
+    loadSinglePreview();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [data, fetchSinglePreview]);
 
   const openModal = (preview, index) => {
     console.log('DEBUG: openModal chamado', { preview, index });
     console.log('DEBUG: preview.preview:', preview.preview);
     console.log('DEBUG: data[index]:', data[index]);
-    setSelectedPreview({ preview: preview.preview, index, data: data[index] });
+    const previewData = preview.data || data?.[index];
+    setSelectedPreview({ preview: preview.preview, index, data: previewData });
     setShowModal(true);
     console.log('DEBUG: showModal definido como true');
   };
@@ -179,6 +175,57 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
     link.click();
     document.body.removeChild(link);
     toast.success('Preview baixado com sucesso!');
+  };
+
+  const handlePrintAll = async () => {
+    if (!data || data.length === 0) {
+      toast.error('Nenhum dado disponível para impressão.');
+      return;
+    }
+
+    const confirmation = window.confirm(
+      `Esta ação enviará ${totalLabels} etiqueta(s) para a impressora.
+Confirma a impressão agora?`
+    );
+
+    if (!confirmation) {
+      return;
+    }
+
+    setIsPrintingAll(true);
+    setError(null);
+
+    try {
+      const normalized = normalizeItems(data);
+      const response = await axios.post('/api/print-all', {
+        data: normalized
+      }, {
+        timeout: 300000
+      });
+
+      const successCount = response.data?.successCount ?? 0;
+      const totalCount = response.data?.totalEtiquetas ?? totalLabels;
+
+      if (successCount === totalCount && totalCount > 0) {
+        toast.success(`✅ ${successCount} etiqueta(s) enviadas para impressão.`);
+      } else if (totalCount > 0) {
+        toast.warning(`${successCount}/${totalCount} etiquetas foram enviadas. Verifique o relatório.`);
+      } else {
+        toast.info('Nenhuma etiqueta foi processada.');
+      }
+    } catch (error) {
+      console.error('Erro ao imprimir todas as etiquetas:', error);
+      const message = error.response?.data?.error || error.message || 'Erro ao imprimir todas as etiquetas.';
+      setError(message);
+      toast.error(
+        <div>
+          <strong>Erro ao Imprimir Todas</strong>
+          <p style={{ margin: '8px 0', fontSize: '14px' }}>{message}</p>
+        </div>
+      );
+    } finally {
+      setIsPrintingAll(false);
+    }
   };
 
   const printIndividualLabel = async (itemData, index) => {
@@ -270,89 +317,9 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
       });
     }
   };
-
-  // Abrir modal de preview antes de imprimir
-  const handlePrintAllClick = () => {
-    if (!data || data.length === 0) {
-      toast.error('Nenhum dado disponível para impressão');
-      return;
-    }
-    setShowPrintAllModal(true);
-  };
-
-  // Função chamada quando usuário confirma impressão no modal
-  const handleConfirmPrintAll = async (editedData) => {
-    setIsPrintingAll(true);
-    setError(null);
-
-    try {
-      const normalized = normalizeItems(editedData);
-      
-      // Calcular total de etiquetas baseado no QTY editado
-      const totalEtiquetas = editedData.reduce((total, item) => {
-        const qty = parseInt(item.QTY) || 1;
-        return total + qty;
-      }, 0);
-
-      console.log(`Imprimindo TODAS as ${normalized.length} etiquetas...`);
-      
-      const response = await axios.post('/api/print-all', {
-        data: normalized
-      }, {
-        timeout: 300000 // 5 minutos de timeout
-      });
-
-      if (response.data) {
-        const successCount = response.data.successCount || 0;
-        const totalCount = response.data.totalEtiquetas || totalEtiquetas;
-        
-        if (successCount === totalCount) {
-          toast.success(
-            `✅ ${successCount} etiquetas impressas com sucesso! (SEM VOID)`,
-            { autoClose: 5000 }
-          );
-        } else {
-          toast.warning(
-            `${successCount}/${totalCount} etiquetas impressas. Verifique os resultados.`,
-            { autoClose: 5000 }
-          );
-        }
-      } else {
-        throw new Error('Resposta inválida do servidor');
-      }
-    } catch (error) {
-      console.error('Erro ao imprimir todas as etiquetas:', error);
-      const errorMessage = error.response?.data?.error || error.message || 'Erro ao imprimir todas as etiquetas. Verifique se a impressora está conectada.';
-      setError(errorMessage);
-      
-      // Mostrar popup de erro detalhado
-      toast.error(
-        <div>
-          <strong>Erro na Impressão</strong>
-          <p style={{ margin: '8px 0', fontSize: '14px' }}>{errorMessage}</p>
-          <p style={{ margin: '8px 0', fontSize: '12px', color: '#666' }}>
-            Você pode continuar usando o sistema para gerar previews e editar layout.
-          </p>
-        </div>,
-        { 
-          autoClose: 8000,
-          style: { fontSize: '14px' }
-        }
-      );
-    } finally {
-      setIsPrintingAll(false);
-    }
-  };
-
+ 
   return (
     <>
-      <PrintAllPreviewModal
-        isOpen={showPrintAllModal}
-        onClose={() => setShowPrintAllModal(false)}
-        data={data}
-        onConfirmPrint={handleConfirmPrintAll}
-      />
-      
       <LabelLayoutEditor
         isOpen={showLayoutEditor}
         onClose={() => setShowLayoutEditor(false)}
@@ -370,107 +337,68 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
       <div className="card">
       <div className="preview-controls">
         <div className="control-buttons">
-          <button
-            className="btn btn-primary"
-            onClick={generatePreviews}
-            disabled={isGenerating || !data}
-          >
-            {isGenerating && viewMode === 'preview' ? (
-              <>
-                <div className="spinner"></div>
-                Gerando Preview...
-              </>
-            ) : (
-              <>
-                <Eye size={16} />
-                Gerar Preview
-              </>
-            )}
-          </button>
-
           {data && data.length > 0 && (
-            <>
-              <button
-                className="btn btn-success"
-                onClick={handlePrintAllClick}
-                disabled={isGenerating || isPrintingAll || !data}
-                title={`Preview e impressão de todas as ${data.reduce((total, item) => total + (parseInt(item.QTY) || 1), 0)} etiquetas`}
-              >
-                {isPrintingAll ? (
-                  <>
-                    <div className="spinner"></div>
-                    Imprimindo Todas...
-                  </>
-                ) : (
-                  <>
-                    <Eye size={16} />
-                    Preview e Imprimir Todas ({data.reduce((total, item) => total + (parseInt(item.QTY) || 1), 0)})
-                  </>
-                )}
-              </button>
-              
-              <button
-                className="btn btn-secondary"
-                onClick={async () => {
-                  // Tentar gerar preview de uma etiqueta de exemplo para o editor
-                  // Se falhar, abrir editor mesmo sem preview
-                  try {
-                    if (data && data.length > 0) {
-                      try {
-                        const normalized = normalizeItems([data[0]]);
-                        const response = await axios.post('/api/generate-preview', {
-                          data: normalized
-                        }, {
-                          timeout: 30000 // 30 segundos
-                        });
-                        if (response.data?.previews?.[0]) {
-                          setLayoutEditorPreview(response.data.previews[0].preview);
-                          setShowLayoutEditor(true);
-                          return;
-                        }
-                      } catch (previewError) {
-                        console.warn('Erro ao gerar preview para editor, abrindo editor sem preview:', previewError);
-                        // Continuar mesmo sem preview - abrir editor com dados mock
-                      }
-                      
-                      // Se chegou aqui, abrir editor sem preview (permitir edição mesmo sem impressora)
-                      setLayoutEditorPreview(null);
-                      setShowLayoutEditor(true);
-                      toast.info('Editor aberto sem preview. Você pode ajustar o layout mesmo sem impressora conectada.');
-                    }
-                  } catch (error) {
-                    console.error('Erro ao abrir editor:', error);
-                    toast.error(
-                      <div>
-                        <strong>Erro ao Abrir Editor</strong>
-                        <p style={{ margin: '8px 0', fontSize: '14px' }}>
-                          {error.message || 'Erro desconhecido'}
-                        </p>
-                        <p style={{ margin: '8px 0', fontSize: '12px', color: '#666' }}>
-                          Tentando abrir editor sem preview...
-                        </p>
-                      </div>,
-                      { autoClose: 5000 }
-                    );
-                    
-                    // Tentar abrir mesmo assim
-                    try {
-                      setLayoutEditorPreview(null);
-                      setShowLayoutEditor(true);
-                    } catch (e) {
-                      // Se ainda falhar, mostrar erro final
-                      toast.error('Não foi possível abrir o editor de layout.');
-                    }
+            <button
+              className="btn btn-secondary"
+              onClick={async () => {
+                try {
+                  if (!data || data.length === 0) {
+                    toast.warn('Nenhum dado disponível para gerar preview do layout.');
+                    return;
                   }
-                }}
-                title="Editar layout e posicionamento da etiqueta (funciona mesmo sem impressora)"
-              >
-                <Settings size={16} />
-                Editar Layout
-              </button>
-            </>
+
+                  if (singlePreview) {
+                    setLayoutEditorPreview(singlePreview);
+                    setShowLayoutEditor(true);
+                    return;
+                  }
+
+                  try {
+                    const previewImage = await fetchSinglePreview(data[0]);
+                    if (previewImage) {
+                      setSinglePreview(previewImage);
+                      setLayoutEditorPreview(previewImage);
+                    } else {
+                      setLayoutEditorPreview(null);
+                      toast.warn('Preview não retornou imagem, abrindo editor sem preview.');
+                    }
+                  } catch (previewError) {
+                    console.warn('Erro ao gerar preview para editor, abrindo editor sem preview:', previewError);
+                    setLayoutEditorPreview(null);
+                    toast.info('Editor aberto sem preview. Você pode ajustar o layout mesmo sem impressora conectada.');
+                  }
+
+                  setShowLayoutEditor(true);
+                } catch (error) {
+                  console.error('Erro ao abrir editor:', error);
+                  toast.error(
+                    <div>
+                      <strong>Erro ao Abrir Editor</strong>
+                      <p style={{ margin: '8px 0', fontSize: '14px' }}>
+                        {error.message || 'Erro desconhecido'}
+                      </p>
+                      <p style={{ margin: '8px 0', fontSize: '12px', color: '#666' }}>
+                        Tentando abrir editor sem preview...
+                      </p>
+                    </div>,
+                    { autoClose: 5000 }
+                  );
+
+                  try {
+                    setLayoutEditorPreview(null);
+                    setShowLayoutEditor(true);
+                  } catch (e) {
+                    toast.error('Não foi possível abrir o editor de layout.');
+                  }
+                }
+              }}
+              title="Editar layout e posicionamento da etiqueta"
+            >
+              <Settings size={16} />
+              Editar Layout
+            </button>
           )}
-          
+
           {data && (
             <div className="view-mode-toggle">
               <button
@@ -479,13 +407,6 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
               >
                 <List size={16} />
                 Lista para Impressão
-              </button>
-              <button
-                className={`btn ${viewMode === 'preview' ? 'btn-primary' : 'btn-secondary'}`}
-                onClick={() => setViewMode('preview')}
-              >
-                <Eye size={16} />
-                Visualizar Preview
               </button>
             </div>
           )}
@@ -613,7 +534,6 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
                 <div className="header-cell">Cor</div>
                 <div className="header-cell">Tamanho</div>
                 <div className="header-cell">PO</div>
-                <div className="header-cell">LOCAL</div>
                 <div className="header-cell">Qtd</div>
                 <div className="header-cell">Ações</div>
               </div>
@@ -652,7 +572,6 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
                     </div>
                     <div className="table-cell">{item.SIZE || 'N/A'}</div>
                     <div className="table-cell">{item.PO ? `PO${item.PO}` : 'N/A'}</div>
-                    <div className="table-cell">{item.LOCAL || 'N/A'}</div>
                     <div className="table-cell">
                       <span className="qty-badge">{item.QTY || 1}</span>
                     </div>
@@ -756,13 +675,6 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
                         </div>
                       )}
                       
-                      {item.LOCAL && (
-                        <div className="item-field">
-                          <Hash size={14} />
-                          <span className="field-label">LOCAL:</span>
-                          <span className="field-value">{item.LOCAL}</span>
-                        </div>
-                      )}
                     </div>
                     
                     <div className="grid-item-footer">
@@ -790,6 +702,18 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
               })}
             </div>
           )}
+
+          <div className="bulk-actions">
+            <button
+              className="btn btn-primary"
+              onClick={handlePrintAll}
+              disabled={isPrintingAll}
+            >
+              <Printer size={16} />
+              {isPrintingAll ? 'Imprimindo todas...' : `Imprimir todas (${totalLabels})`}
+              {isPrintingAll && <div className="spinner-small" style={{ marginLeft: '8px' }}></div>}
+            </button>
+          </div>
           <div className="list-summary">
             <p>
               <strong>Exibindo:</strong> {filteredData.length} itens 
@@ -802,52 +726,6 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
                 </span>
               )}
             </p>
-          </div>
-        </div>
-      )}
-
-      {previews.length > 0 && viewMode === 'preview' && (
-        <div className="preview-results">
-          <h3>Preview das Etiquetas</h3>
-          <div className="preview-vertical-list">
-            {previews.map((preview, index) => (
-              <div key={index} className="label-preview-vertical">
-                <div className="preview-image-container-large">
-                  <img
-                    src={preview.preview}
-                    alt={`Preview da etiqueta ${index + 1}`}
-                    loading="lazy"
-                    className="preview-image-large"
-                  />
-                  <div className="preview-overlay">
-                    <button
-                      className="btn btn-icon"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        console.log('DEBUG: Botão zoom clicado!');
-                        openModal(preview, index);
-                      }}
-                      title="Visualizar em tamanho maior"
-                    >
-                      <ZoomIn size={16} />
-                    </button>
-                    <button
-                      className="btn btn-icon"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        console.log('DEBUG: Botão download clicado!');
-                        downloadPreview(preview, index);
-                      }}
-                      title="Baixar preview"
-                    >
-                      <Download size={16} />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))}
           </div>
         </div>
       )}
@@ -906,15 +784,6 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
                       <div>
                         <strong>PO:</strong>
                         <span>PO{selectedPreview.data.PO}</span>
-                      </div>
-                    </div>
-                  )}
-                  {selectedPreview.data?.LOCAL && (
-                    <div className="detail-item">
-                      <Info size={16} />
-                      <div>
-                        <strong>LOCAL:</strong>
-                        <span>{selectedPreview.data.LOCAL}</span>
                       </div>
                     </div>
                   )}

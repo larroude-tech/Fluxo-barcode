@@ -15,7 +15,7 @@ const Header = ({ sidebarOpen, setSidebarOpen, activeTab }) => {
   const getPageDescription = (tab) => {
     const descriptions = {
       home: 'Bem-vindo ao sistema de geração de etiquetas RFID',
-      labels: 'Upload de CSV e geração de etiquetas personalizadas',
+      labels: 'Selecionar POs do PostgreSQL e gerar etiquetas personalizadas',
       config: 'Configuração e teste da impressora RFID'
     };
     return descriptions[tab] || 'Sistema profissional de etiquetas RFID';

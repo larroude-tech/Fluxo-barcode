@@ -1,9 +1,9 @@
 ﻿const express = require('express');
 const cors = require('cors');
-const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const XLSX = require('xlsx');
+require('dotenv').config({ path: path.join(__dirname, '../.env') });
+const { Pool } = require('pg');
 const QRCode = require('qrcode');
 const JsBarcode = require('jsbarcode');
 const { PDFDocument, rgb } = require('pdf-lib');
@@ -12,6 +12,10 @@ const sharp = require('sharp');
 const axios = require('axios');
 const { Label } = require('node-zpl');
 const QRCodeFinder = require('./qr-code-finder');
+const upload = {
+  single: () => (req, res, next) => next()
+};
+const registerPostgresLabelsRoutes = require('./routes/postgres-labels');
 
 /**
  * Utilitários RFID para conversão hexadecimal
@@ -93,8 +97,83 @@ class RFIDUtils {
   }
 }
 
+const buildSslConfig = (mode) => {
+  if (!mode) {
+    return undefined;
+  }
+
+  const normalized = mode.toString().toLowerCase();
+  if (normalized === 'require') {
+    return { rejectUnauthorized: false };
+  }
+
+  if (normalized === 'disable' || normalized === 'allow' || normalized === 'prefer') {
+    return false;
+  }
+
+  return undefined;
+};
+
+const createDatabasePool = () => {
+  const {
+    DATABASE_URL,
+    PGHOST,
+    PGPORT,
+    PGUSER,
+    PGPASSWORD,
+    PGDATABASE,
+    PGSSLMODE
+  } = process.env;
+
+  const ssl = buildSslConfig(PGSSLMODE);
+  const usingDatabaseUrl = Boolean(DATABASE_URL);
+
+  const baseConfig = usingDatabaseUrl
+    ? { connectionString: DATABASE_URL }
+    : {
+        host: PGHOST,
+        port: PGPORT ? Number(PGPORT) : undefined,
+        user: PGUSER,
+        password: PGPASSWORD,
+        database: PGDATABASE
+      };
+
+  if (ssl !== undefined) {
+    baseConfig.ssl = ssl;
+  }
+
+  const logDetails = usingDatabaseUrl
+    ? 'source=DATABASE_URL'
+    : `host=${baseConfig.host || 'localhost'}, db=${baseConfig.database || '(default)'}, user=${baseConfig.user || '(default)'}`;
+
+  console.log(`[DB] Inicializando pool PostgreSQL (${logDetails}, sslMode=${PGSSLMODE || (ssl ? 'custom' : 'disabled')})`);
+  if (ssl && typeof ssl === 'object') {
+    console.log(`[DB] SSL config -> rejectUnauthorized=${ssl.rejectUnauthorized === false ? 'false' : 'true'}`);
+  }
+
+  return new Pool(baseConfig);
+};
+
+const pool = createDatabasePool();
+
+pool.on('connect', (client) => {
+  const pid = client?.processID || 'n/a';
+  console.log(`[DB] Conexão estabelecida com PostgreSQL (pid=${pid})`);
+});
+
+pool.on('acquire', (client) => {
+  const pid = client?.processID || 'n/a';
+  console.log(`[DB] Cliente PostgreSQL adquirido do pool (pid=${pid})`);
+});
+
+pool.on('error', (err) => {
+  console.error('[DB] Erro inesperado no pool PostgreSQL:', err);
+});
+
 const app = express();
-const PORT = process.env.PORT || 3002;
+const PORT = process.env.PORT || 3005;
+
+registerPostgresLabelsRoutes(app, pool);
 
 // Instanciar finder de QR codes
 const qrCodeFinder = new QRCodeFinder();
@@ -484,7 +563,7 @@ async function convertImageToZPL(imageUrl, width = 80, height = 80) {
                   console.log(`[OK] QR code gerado com sucesso (${qrCodeBuffer.length} bytes)`);
                   imageBuffer = qrCodeBuffer;
                 } catch (qrError) {
-                  throw new Error(`Erro ao gerar QR code: ${qrError.message}`);
+                  throw new Error(`Erro ao baixar imagem e ao gerar QR code: ${altError.message} / ${qrError.message}`);
                 }
               }
             }
@@ -679,33 +758,6 @@ app.use(express.json({ limit: maxUploadSize }));
 app.use(express.urlencoded({ limit: maxUploadSize, extended: true }));
 app.use(express.static('public'));
 
-// ConfiguraÃ§Ã£o do multer para upload de arquivos
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = process.env.UPLOAD_DIR || 'uploads';
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir);
-    }
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + '-' + file.originalname);
-  }
-});
-
-const upload = multer({ 
-  storage: storage,
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = ['.xlsx', '.xls', '.csv'];
-    const fileExt = path.extname(file.originalname).toLowerCase();
-    if (allowedTypes.includes(fileExt)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Apenas arquivos Excel (.xlsx, .xls) ou CSV sÃ£o permitidos'));
-    }
-  }
-});
-
 // Rotas
 app.get('/', (req, res) => {
   res.json({ message: 'Servidor LarroudÃ© RFID funcionando!' });
@@ -785,6 +837,9 @@ app.post('/api/qr-codes/test', async (req, res) => {
 
 // Upload e processamento do arquivo Excel
 app.post('/api/upload-excel', upload.single('excel'), async (req, res) => {
+  return res.status(410).json({
+    error: 'Endpoint removido. Utilize /api/purchase-orders e /api/labels para acessar os dados.'
+  });
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'Nenhum arquivo foi enviado' });
@@ -2678,7 +2733,7 @@ function generateLabelZPL(item) {
 ^FO10,10^GB792,386,2,B,0^FS
 
 ^FO20,20^GB50,50,2,B,0^FS
-^FO25,25^A0N,16,16^FDðŸ‘ ^FS
+^FO25,25^A0N,16,16^FDðŸ' ^FS
 
 ^FO720,20^GB70,50,2,B,0^FS
 ^FO725,25^A0N,12,12^FDPO: ^FS

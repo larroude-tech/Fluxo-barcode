@@ -1,3 +1,22 @@
+.preview-container {
+  flex: 1 1 auto;
+  background: #ffffff;
+  border: 2px solid #3b82f6;
+  border-radius: 12px;
+  padding: 15px;
+  box-shadow: 0 4px 6px rgba(59, 130, 246, 0.1);
+  display: flex;
+  flex-direction: column;
+  min-height: 350px;
+}
+
+.preview-container h3 {
+  margin-bottom: 10px;
+  color: #1e40af;
+  border-bottom: 2px solid #3b82f6;
+  padding-bottom: 8px;
+  font-size: 16px;
+}
 /* FileUpload Component Styles */
 .upload-zone {
   position: relative;
@@ -894,4 +913,16 @@
     width: 100px;
     height: 100px;
   }
+}
+
+.items-list .bulk-actions {
+  margin-top: 20px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.items-list .bulk-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }

@@ -24,7 +24,9 @@
     "qrcode": "^1.5.3",
     "serialport": "^13.0.0",
     "sharp": "^0.32.6",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "dotenv": "^16.4.5",
+    "pg": "^8.12.0"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

@@ -91,7 +91,7 @@ jobs:
           env_vars: |
             NODE_ENV=production
           secrets: ${{ steps.prepare_secrets.outputs.secrets }}
-          flags: '--service-account=data-github-integration@larroude-data-prod.iam.gserviceaccount.com'
+          flags: '--service-account=data-github-integration@larroude-data-prod.iam.gserviceaccount.com --timeout=300 --cpu=1 --memory=512Mi'
 
       - name: Export deployment info
         run: |

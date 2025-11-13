@@ -774,7 +774,16 @@ app.use(express.static('public'));
 
 // Rotas
 app.get('/', (req, res) => {
-  res.json({ message: 'Servidor LarroudÃ© RFID funcionando!' });
+  res.json({ message: 'Servidor Larroudé RFID funcionando!' });
+});
+
+// Health check endpoint para Cloud Run
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
 });
 
 // Configurar caminho base para busca de QR codes
@@ -2893,21 +2902,52 @@ async function generateLabelPDF(item) {
   return await pdfDoc.save();
 }
 
-// Importar módulo de conexão USB
-const USBPrinterConnection = require('./usb-printer-connection');
-const ZebraUSBConnection = require('./zebra-usb-connection');
-const PythonUSBIntegration = require('./python-usb-integration');
+// Importar módulo de conexão USB (lazy loading para evitar problemas no Cloud Run)
+let USBPrinterConnection, ZebraUSBConnection, PythonUSBIntegration;
+let usbConnection, zebraUSBConnection, pythonUSBIntegration;
 
-// RFIDPrinterTest removido - arquivo não é usado pela aba de etiquetas
+// Função para inicializar conexões USB apenas quando necessário
+const initUSBConnections = () => {
+  if (!usbConnection) {
+    try {
+      USBPrinterConnection = require('./usb-printer-connection');
+      ZebraUSBConnection = require('./zebra-usb-connection');
+      PythonUSBIntegration = require('./python-usb-integration');
+      usbConnection = new USBPrinterConnection();
+      zebraUSBConnection = new ZebraUSBConnection();
+      pythonUSBIntegration = new PythonUSBIntegration();
+      console.log('[USB] Conexões USB inicializadas com sucesso');
+    } catch (error) {
+      console.warn('[USB] Aviso: Não foi possível inicializar conexões USB (normal no Cloud Run):', error.message);
+      // Criar objetos dummy para evitar erros
+      usbConnection = { 
+        isConnected: false, 
+        listPorts: async () => ({ allPorts: [], printerPorts: [] }),
+        connect: async () => { throw new Error('USB não disponível no Cloud Run'); },
+        disconnect: async () => {},
+        getConnectionInfo: () => ({ connected: false })
+      };
+      zebraUSBConnection = { 
+        isConnected: false, 
+        detectPrinters: async () => ({ serial: [], windows: [], usb: [] }),
+        connect: async () => { throw new Error('USB não disponível no Cloud Run'); },
+        disconnect: async () => {}
+      };
+      pythonUSBIntegration = { 
+        listPrinters: async () => ({ success: false, printers: [] }),
+        connect: async () => { throw new Error('USB não disponível no Cloud Run'); }
+      };
+    }
+  }
+  return { usbConnection, zebraUSBConnection, pythonUSBIntegration };
+};
 
-// Instância global da conexão USB (fallback)
-const usbConnection = new USBPrinterConnection();
-
-// Instância global da conexão Zebra USB (fallback)
-const zebraUSBConnection = new ZebraUSBConnection();
-
-// Instância global da integração Python USB (método principal)
-const pythonUSBIntegration = new PythonUSBIntegration();
+// Inicializar conexões USB (pode falhar silenciosamente no Cloud Run)
+try {
+  initUSBConnections();
+} catch (error) {
+  console.warn('[USB] Erro ao inicializar conexões USB na startup (continuando...):', error.message);
+}
 
 // ========================================
 // ENDPOINTS PARA TESTE DE IMPRESSORA RFID

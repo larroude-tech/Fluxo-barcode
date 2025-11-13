@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { 
-  Home, 
   Tag, 
   Settings, 
   Printer,
@@ -11,12 +10,6 @@ import './Sidebar.css';
 
 const Sidebar = ({ activeTab, setActiveTab, isOpen, setIsOpen }) => {
   const menuItems = [
-    {
-      id: 'home',
-      label: 'Início',
-      icon: Home,
-      description: 'Página inicial'
-    },
     {
       id: 'labels',
       label: 'Etiquetas',

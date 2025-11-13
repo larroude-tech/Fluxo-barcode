@@ -1,17 +1,44 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { AlertCircle, ZoomIn, Download, Info, Printer, List, Search, X, Grid3X3, LayoutList, Barcode, Package, Palette, Ruler, Hash, FileText, Settings } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Info, Printer, List, Search, X, Grid3X3, LayoutList, Barcode, Package, Palette, Ruler, Hash, FileText, Settings } from 'lucide-react';
 import { toast } from 'react-toastify';
 import LabelLayoutEditor from './LabelLayoutEditor.js';
 import './PrintList.css';
 
+const REQUIRED_FIELDS = [
+  { key: 'STYLE_NAME', label: 'Nome do Produto' },
+  { key: 'VPN', label: 'VPN' },
+  { key: 'BARCODE', label: 'Código de Barras' },
+  { key: 'DESCRIPTION', label: 'Material / Color' },
+  { key: 'SIZE', label: 'Tamanho' },
+  { key: 'PO', label: 'PO' },
+  {
+    key: 'QTY',
+    label: 'Quantidade',
+    validate: (value) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) && parsed > 0;
+    }
+  }
+];
+
 // Componente atualizado para exibir todas as etiquetas em tamanho real
+
+const validateDefaultField = (value) => {
+  if (value === null || value === undefined) {
+    return false;
+  }
+
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value !== 0;
+  }
+
+  return String(value).trim() !== '';
+};
 
 const PreviewSection = ({ data, onPreviewGenerated }) => {
   const [singlePreview, setSinglePreview] = useState(null);
   const [error, setError] = useState(null);
-  const [selectedPreview, setSelectedPreview] = useState(null);
-  const [showModal, setShowModal] = useState(false);
   const [viewMode, setViewMode] = useState('preview'); // 'preview' ou 'list'
   const [listLayout, setListLayout] = useState('list'); // 'list' ou 'grid'
   const [printingItems, setPrintingItems] = useState(new Set());
@@ -21,13 +48,6 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
   const [showLayoutEditor, setShowLayoutEditor] = useState(false);
   const [layoutEditorPreview, setLayoutEditorPreview] = useState(null);
   const [isPrintingAll, setIsPrintingAll] = useState(false);
-
-  const previews = useMemo(() => {
-    if (!singlePreview || !data || data.length === 0) {
-      return [];
-    }
-    return [{ preview: singlePreview, data: data[0] }];
-  }, [singlePreview, data]);
 
   const totalLabels = useMemo(() => {
     if (!data || data.length === 0) {
@@ -85,6 +105,14 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
     return item.BARCODE || item.VPN?.replace(/-/g, '')?.substring(0, 12) || 'N/A';
   };
 
+  const getMissingFields = useCallback((item = {}) => {
+    return REQUIRED_FIELDS.filter(({ key, validate }) => {
+      const value = item[key];
+      const validator = typeof validate === 'function' ? validate : validateDefaultField;
+      return !validator(value);
+    }).map(({ key, label }) => ({ key, label }));
+  }, []);
+
   const normalizeItems = useCallback((items) => {
     return (items || []).map((row) => {
       const sku = (row.SKU || row.VPN || '').toString().trim();
@@ -108,6 +136,27 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
       };
     });
   }, []);
+
+  const invalidItems = useMemo(() => {
+    if (!data || data.length === 0) {
+      return [];
+    }
+
+    return data
+      .map((item, index) => {
+        const missingFields = getMissingFields(item);
+        if (missingFields.length === 0) {
+          return null;
+        }
+
+        return {
+          index,
+          item,
+          missingFields
+        };
+      })
+      .filter(Boolean);
+  }, [data, getMissingFields]);
 
   const fetchSinglePreview = useCallback(async (item) => {
     const normalized = normalizeItems([item]);
@@ -152,30 +201,24 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
     };
   }, [data, fetchSinglePreview]);
 
-  const openModal = (preview, index) => {
-    console.log('DEBUG: openModal chamado', { preview, index });
-    console.log('DEBUG: preview.preview:', preview.preview);
-    console.log('DEBUG: data[index]:', data[index]);
-    const previewData = preview.data || data?.[index];
-    setSelectedPreview({ preview: preview.preview, index, data: previewData });
-    setShowModal(true);
-    console.log('DEBUG: showModal definido como true');
-  };
+  const printableItems = useMemo(() => {
+    if (!data || data.length === 0) {
+      return [];
+    }
 
-  const closeModal = () => {
-    setShowModal(false);
-    setSelectedPreview(null);
-  };
+    return data.filter((item) => getMissingFields(item).length === 0);
+  }, [data, getMissingFields]);
 
-  const downloadPreview = (preview, index) => {
-    const link = document.createElement('a');
-    link.href = preview.preview;
-    link.download = `preview-etiqueta-${index + 1}.png`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    toast.success('Preview baixado com sucesso!');
-  };
+  const totalPrintableLabels = useMemo(() => {
+    if (printableItems.length === 0) {
+      return 0;
+    }
+
+    return printableItems.reduce(
+      (sum, item) => sum + (parseInt(item.QTY, 10) || 1),
+      0
+    );
+  }, [printableItems]);
 
   const handlePrintAll = async () => {
     if (!data || data.length === 0) {
@@ -183,20 +226,18 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
       return;
     }
 
-    const confirmation = window.confirm(
-      `Esta ação enviará ${totalLabels} etiqueta(s) para a impressora.
-Confirma a impressão agora?`
-    );
-
-    if (!confirmation) {
+    if (printableItems.length === 0) {
+      toast.error('Nenhuma etiqueta sem pendências está disponível para impressão.');
       return;
     }
+
+    const skippedCount = data.length - printableItems.length;
 
     setIsPrintingAll(true);
     setError(null);
 
     try {
-      const normalized = normalizeItems(data);
+      const normalized = normalizeItems(printableItems);
       const response = await axios.post('/api/print-all', {
         data: normalized
       }, {
@@ -204,7 +245,7 @@ Confirma a impressão agora?`
       });
 
       const successCount = response.data?.successCount ?? 0;
-      const totalCount = response.data?.totalEtiquetas ?? totalLabels;
+      const totalCount = response.data?.totalEtiquetas ?? totalPrintableLabels;
 
       if (successCount === totalCount && totalCount > 0) {
         toast.success(`✅ ${successCount} etiqueta(s) enviadas para impressão.`);
@@ -212,6 +253,10 @@ Confirma a impressão agora?`
         toast.warning(`${successCount}/${totalCount} etiquetas foram enviadas. Verifique o relatório.`);
       } else {
         toast.info('Nenhuma etiqueta foi processada.');
+      }
+
+      if (skippedCount > 0) {
+        toast.info(`${skippedCount} item(ns) com pendências foram ignorados na impressão em lote.`);
       }
     } catch (error) {
       console.error('Erro ao imprimir todas as etiquetas:', error);
@@ -229,37 +274,20 @@ Confirma a impressão agora?`
   };
 
   const printIndividualLabel = async (itemData, index) => {
-    // Perguntar quantas etiquetas imprimir
-    const quantity = prompt(
-      `Quantas etiquetas de "${itemData.STYLE_NAME}" deseja imprimir?\n\n` +
-      `Produto: ${itemData.STYLE_NAME}\n` +
-      `VPN: ${itemData.VPN}\n` +
-      `Cor: ${itemData.COLOR}\n` +
-      `Tamanho: ${itemData.SIZE}\n\n` +
-      `Digite a quantidade (recomendado: 1 para testes):`,
-      '1'
-    );
-    
-    // Verificar se usuário cancelou ou não digitou nada
-    if (quantity === null) {
-      return; // Usuário cancelou
-    }
-    
-    // Validar quantidade
-    const qty = parseInt(quantity);
-    if (isNaN(qty) || qty <= 0 || qty > 100) {
-      toast.error('Quantidade inválida! Digite um número entre 1 e 100.');
+    const missingFields = getMissingFields(itemData);
+    if (missingFields.length > 0) {
+      toast.error(
+        <div>
+          <strong>Campos obrigatórios faltando</strong>
+          <p style={{ margin: '8px 0', fontSize: '14px' }}>
+            Esta etiqueta não pode ser impressa porque faltam: {missingFields.map(field => field.label).join(', ')}.
+          </p>
+        </div>
+      );
       return;
     }
-    
-    // Confirmar impressão
-    const confirmMessage = qty === 1 
-      ? `Confirma impressão de 1 etiqueta de "${itemData.STYLE_NAME}"?`
-      : `Confirma impressão de ${qty} etiquetas de "${itemData.STYLE_NAME}"?\n\nATENÇÃO: Isso consumirá ${qty} etiquetas físicas!`;
-      
-    if (!window.confirm(confirmMessage)) {
-      return; // Usuário cancelou confirmação
-    }
+
+    const qty = Math.max(1, parseInt(itemData.QTY, 10) || 1);
 
     const itemId = `${index}`;
     setPrintingItems(prev => new Set(prev).add(itemId));
@@ -328,6 +356,14 @@ Confirma a impressão agora?`
           try {
             await axios.post('/api/layout/save', { layout });
             toast.success('Layout salvo! As próximas impressões usarão este layout.');
+
+            if (data && data.length > 0) {
+              const updatedPreview = await fetchSinglePreview(data[0]);
+              if (updatedPreview) {
+                setSinglePreview(updatedPreview);
+                setLayoutEditorPreview(updatedPreview);
+              }
+            }
           } catch (error) {
             toast.error('Erro ao salvar layout');
           }
@@ -445,14 +481,47 @@ Confirma a impressão agora?`
           <p>
             <strong>Total de registros:</strong> {data.length} itens únicos
           </p>
+          {invalidItems.length > 0 && (
+            <p>
+              <strong>Etiquetas prontas:</strong> {data.length - invalidItems.length}{' '}
+              • <strong>Com pendências:</strong> {invalidItems.length}
+            </p>
+          )}
           {totalLabels > 0 && (
             <p>
-              <strong>Total de etiquetas:</strong> {totalLabels} etiquetas serão geradas (baseado no campo QTY)
+              <strong>Total de etiquetas:</strong> {totalLabels} (todos os itens) • <strong>Sem pendências:</strong> {totalPrintableLabels}
             </p>
           )}
           <p>
             <strong>Modo atual:</strong> {viewMode === 'list' ? 'Lista para impressão individual' : 'Preview visual das etiquetas'}
           </p>
+        </div>
+      )}
+
+      {invalidItems.length > 0 && (
+        <div className="invalid-labels-alert">
+          <div className="invalid-labels-header">
+            <AlertTriangle size={18} />
+            <div>
+              <strong>{invalidItems.length} etiqueta(s) com dados obrigatórios faltando</strong>
+              <span>Corrija os campos destacados abaixo antes de imprimir.</span>
+            </div>
+          </div>
+          <ul className="invalid-labels-list">
+            {invalidItems.map(({ index, item, missingFields }) => (
+              <li key={`${index}-${item.VPN || index}`}>
+                <div className="invalid-label-main">
+                  <span className="invalid-label-id">
+                    #{index + 1} • PO {item.PO || 'N/A'} • {item.VPN || 'SKU indefinido'}
+                  </span>
+                  <span className="invalid-label-name">{item.STYLE_NAME || 'Produto sem nome'}</span>
+                </div>
+                <div className="invalid-label-missing">
+                  Campos faltantes: {missingFields.map(field => field.label).join(', ')}
+                </div>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
@@ -531,7 +600,7 @@ Confirma a impressão agora?`
                 <div className="header-cell">Produto</div>
                 <div className="header-cell">VPN</div>
                 <div className="header-cell">Barcode</div>
-                <div className="header-cell">Cor</div>
+                <div className="header-cell">Material / Color</div>
                 <div className="header-cell">Tamanho</div>
                 <div className="header-cell">PO</div>
                 <div className="header-cell">Qtd</div>
@@ -542,9 +611,16 @@ Confirma a impressão agora?`
                 const itemId = `${originalIndex}`;
                 const isPrinting = printingItems.has(itemId);
                 const barcode = generateBarcode(item);
+                const missingFields = getMissingFields(item);
+                const isInvalid = missingFields.length > 0;
+                const missingLabelText = missingFields.map(field => field.label).join(', ');
                 
                 return (
-                  <div key={index} className="table-row">
+                  <div
+                    key={index}
+                    className={`table-row ${isInvalid ? 'row-invalid' : ''}`}
+                    title={isInvalid ? `Campos obrigatórios faltando: ${missingLabelText}` : undefined}
+                  >
                     <div className="table-cell">{index + 1}</div>
                     <div className="table-cell">
                       <div className="item-info">
@@ -562,12 +638,8 @@ Confirma a impressão agora?`
                       </div>
                     </div>
                     <div className="table-cell">
-                      <span className="color-badge" style={{
-                        backgroundColor: item.COLOR?.toLowerCase() === 'white' ? '#f8f9fa' : item.COLOR?.toLowerCase(),
-                        color: item.COLOR?.toLowerCase() === 'white' || !item.COLOR ? '#333' : '#fff',
-                        border: item.COLOR?.toLowerCase() === 'white' ? '1px solid #dee2e6' : 'none'
-                      }}>
-                        {item.COLOR || 'N/A'}
+                      <span className="material-description">
+                        {item.DESCRIPTION || 'N/A'}
                       </span>
                     </div>
                     <div className="table-cell">{item.SIZE || 'N/A'}</div>
@@ -576,6 +648,12 @@ Confirma a impressão agora?`
                       <span className="qty-badge">{item.QTY || 1}</span>
                     </div>
                     <div className="table-cell">
+                      {isInvalid && (
+                        <div className="missing-fields-hint">
+                          <AlertTriangle size={14} />
+                          <span>Campos faltantes: {missingLabelText}</span>
+                        </div>
+                      )}
                       <div className="action-buttons">
                         <button
                           className="btn btn-info btn-sm"
@@ -587,8 +665,12 @@ Confirma a impressão agora?`
                         <button
                           className="btn btn-print"
                           onClick={() => printIndividualLabel(item, originalIndex)}
-                          disabled={isPrinting}
-                          title={`Imprimir ${item.QTY || 1} etiqueta(s) de ${item.STYLE_NAME}`}
+                          disabled={isPrinting || isInvalid}
+                          title={
+                            isInvalid
+                              ? `Impressão indisponível. Campos faltantes: ${missingLabelText}`
+                              : `Imprimir ${item.QTY || 1} etiqueta(s) de ${item.STYLE_NAME}`
+                          }
                         >
                           {isPrinting ? (
                             <>
@@ -616,9 +698,16 @@ Confirma a impressão agora?`
                 const itemId = `${originalIndex}`;
                 const isPrinting = printingItems.has(itemId);
                 const barcode = generateBarcode(item);
+                const missingFields = getMissingFields(item);
+                const isInvalid = missingFields.length > 0;
+                const missingLabelText = missingFields.map(field => field.label).join(', ');
 
                 return (
-                  <div key={index} className="grid-item">
+                  <div
+                    key={index}
+                    className={`grid-item ${isInvalid ? 'grid-item-invalid' : ''}`}
+                    title={isInvalid ? `Campos obrigatórios faltando: ${missingLabelText}` : undefined}
+                  >
                     <div className="grid-item-header">
                       <h4 className="item-title">{item.STYLE_NAME || 'N/A'}</h4>
                       <button
@@ -645,13 +734,9 @@ Confirma a impressão agora?`
                       
                       <div className="item-field">
                         <Palette size={14} />
-                        <span className="field-label">Cor:</span>
-                        <span className="color-badge small" style={{
-                          backgroundColor: item.COLOR?.toLowerCase() === 'white' ? '#f8f9fa' : item.COLOR?.toLowerCase(),
-                          color: item.COLOR?.toLowerCase() === 'white' || !item.COLOR ? '#333' : '#fff',
-                          border: item.COLOR?.toLowerCase() === 'white' ? '1px solid #dee2e6' : 'none'
-                        }}>
-                          {item.COLOR || 'N/A'}
+                        <span className="field-label">Material / Color:</span>
+                        <span className="field-value material-description">
+                          {item.DESCRIPTION || 'N/A'}
                         </span>
                       </div>
                       
@@ -667,6 +752,14 @@ Confirma a impressão agora?`
                         <span className="qty-badge">{item.QTY || 1}</span>
                       </div>
                       
+                      {isInvalid && (
+                        <div className="item-field missing-fields-inline">
+                          <AlertTriangle size={14} />
+                          <span className="field-label">Campos faltantes:</span>
+                          <span className="field-value">{missingLabelText}</span>
+                        </div>
+                      )}
+                      
                       {item.PO && (
                         <div className="item-field">
                           <Hash size={14} />
@@ -681,8 +774,12 @@ Confirma a impressão agora?`
                       <button
                         className="btn btn-print btn-block"
                         onClick={() => printIndividualLabel(item, originalIndex)}
-                        disabled={isPrinting}
-                        title={`Imprimir ${item.QTY || 1} etiqueta(s) de ${item.STYLE_NAME}`}
+                        disabled={isPrinting || isInvalid}
+                        title={
+                          isInvalid
+                            ? `Impressão indisponível. Campos faltantes: ${missingLabelText}`
+                            : `Imprimir ${item.QTY || 1} etiqueta(s) de ${item.STYLE_NAME}`
+                        }
                       >
                         {isPrinting ? (
                           <>
@@ -707,10 +804,15 @@ Confirma a impressão agora?`
             <button
               className="btn btn-primary"
               onClick={handlePrintAll}
-              disabled={isPrintingAll}
+              disabled={isPrintingAll || totalPrintableLabels === 0}
+              title={
+                totalPrintableLabels === 0
+                  ? 'Nenhuma etiqueta sem pendências está disponível para impressão.'
+                  : undefined
+              }
             >
               <Printer size={16} />
-              {isPrintingAll ? 'Imprimindo todas...' : `Imprimir todas (${totalLabels})`}
+              {isPrintingAll ? 'Imprimindo todas...' : `Imprimir todas (${totalPrintableLabels})`}
               {isPrintingAll && <div className="spinner-small" style={{ marginLeft: '8px' }}></div>}
             </button>
           </div>
@@ -726,79 +828,6 @@ Confirma a impressão agora?`
                 </span>
               )}
             </p>
-          </div>
-        </div>
-      )}
-
-      {/* Modal de visualização ampliada */}
-      {showModal && selectedPreview && (
-        console.log('DEBUG: Renderizando modal', { showModal, selectedPreview }) ||
-        <div className="modal-overlay" onClick={closeModal}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>Etiqueta {selectedPreview.index + 1} - {selectedPreview.data?.STYLE_NAME}</h3>
-              <button className="btn btn-close" onClick={closeModal}>
-                ×
-              </button>
-            </div>
-            <div className="modal-body">
-              <div className="modal-image">
-                <img
-                  src={selectedPreview.preview}
-                  alt={`Preview ampliado da etiqueta ${selectedPreview.index + 1}`}
-                />
-              </div>
-              <div className="modal-details">
-                <div className="detail-grid">
-                  <div className="detail-item">
-                    <Info size={16} />
-                    <div>
-                      <strong>Produto:</strong>
-                      <span>{selectedPreview.data?.STYLE_NAME || 'N/A'}</span>
-                    </div>
-                  </div>
-                  <div className="detail-item">
-                    <Info size={16} />
-                    <div>
-                      <strong>VPN:</strong>
-                      <span>{selectedPreview.data?.VPN || 'N/A'}</span>
-                    </div>
-                  </div>
-                  <div className="detail-item">
-                    <Info size={16} />
-                    <div>
-                      <strong>Cor:</strong>
-                      <span>{selectedPreview.data?.COLOR || 'N/A'}</span>
-                    </div>
-                  </div>
-                  <div className="detail-item">
-                    <Info size={16} />
-                    <div>
-                      <strong>Tamanho:</strong>
-                      <span>{selectedPreview.data?.SIZE || 'N/A'}</span>
-                    </div>
-                  </div>
-                  {selectedPreview.data?.PO && (
-                    <div className="detail-item">
-                      <Info size={16} />
-                      <div>
-                        <strong>PO:</strong>
-                        <span>PO{selectedPreview.data.PO}</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                <div className="modal-actions">
-                  <button
-                    className="btn btn-primary"
-                    onClick={() => downloadPreview({ preview: selectedPreview.preview }, selectedPreview.index)}
-                  >
-                    <Download size={16} />
-                    Baixar Preview
-                  </button>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
       )}
@@ -863,16 +892,10 @@ Confirma a impressão agora?`
                     Especificações
                   </h4>
                   <div className="detail-item">
-                    <span className="detail-label">Cor:</span>
-                    <div className="color-detail">
-                      <span className="color-badge" style={{
-                        backgroundColor: selectedItem.COLOR?.toLowerCase() === 'white' ? '#f8f9fa' : selectedItem.COLOR?.toLowerCase(),
-                        color: selectedItem.COLOR?.toLowerCase() === 'white' || !selectedItem.COLOR ? '#333' : '#fff',
-                        border: selectedItem.COLOR?.toLowerCase() === 'white' ? '1px solid #dee2e6' : 'none'
-                      }}>
-                        {selectedItem.COLOR || 'N/A'}
-                      </span>
-                    </div>
+                    <span className="detail-label">Material / Color:</span>
+                    <span className="detail-value material-description">
+                      {selectedItem.DESCRIPTION || selectedItem.COLOR || 'N/A'}
+                    </span>
                   </div>
                   <div className="detail-item">
                     <span className="detail-label">Tamanho:</span>

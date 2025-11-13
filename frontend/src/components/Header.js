@@ -5,7 +5,6 @@ import './Header.css';
 const Header = ({ sidebarOpen, setSidebarOpen, activeTab }) => {
   const getPageTitle = (tab) => {
     const titles = {
-      home: 'Início',
       labels: 'Geração de Etiquetas',
       config: 'Configuração da Impressora'
     };
@@ -14,7 +13,6 @@ const Header = ({ sidebarOpen, setSidebarOpen, activeTab }) => {
 
   const getPageDescription = (tab) => {
     const descriptions = {
-      home: 'Bem-vindo ao sistema de geração de etiquetas RFID',
       labels: 'Selecionar POs do PostgreSQL e gerar etiquetas personalizadas',
       config: 'Configuração e teste da impressora RFID'
     };

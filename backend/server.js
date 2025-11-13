@@ -37,15 +37,33 @@ console.log('[INIT] axios carregado');
 const { Label } = require('node-zpl');
 console.log('[INIT] node-zpl carregado');
 
-const QRCodeFinder = require('./qr-code-finder');
-console.log('[INIT] qr-code-finder carregado');
+// QRCodeFinder pode não existir, tornar opcional
+let QRCodeFinder;
+try {
+  QRCodeFinder = require('./qr-code-finder');
+  console.log('[INIT] qr-code-finder carregado');
+} catch (error) {
+  console.warn('[INIT] qr-code-finder não encontrado (continuando...):', error.message);
+  // Criar classe dummy
+  QRCodeFinder = class {
+    constructor() {}
+    find() { return null; }
+  };
+}
 
 const upload = {
   single: () => (req, res, next) => next()
 };
 
-const registerPostgresLabelsRoutes = require('./routes/postgres-labels');
-console.log('[INIT] routes/postgres-labels carregado');
+// Rotas PostgreSQL podem falhar se pool for null
+let registerPostgresLabelsRoutes;
+try {
+  registerPostgresLabelsRoutes = require('./routes/postgres-labels');
+  console.log('[INIT] routes/postgres-labels carregado');
+} catch (error) {
+  console.warn('[INIT] routes/postgres-labels não encontrado (continuando...):', error.message);
+  registerPostgresLabelsRoutes = () => {}; // Função vazia
+}
 
 console.log('[INIT] Todos os módulos principais carregados com sucesso');
 
@@ -235,8 +253,15 @@ try {
   console.log('[INIT] Continuando sem rotas PostgreSQL');
 }
 
-// Instanciar finder de QR codes
-const qrCodeFinder = new QRCodeFinder();
+// Instanciar finder de QR codes (pode falhar se QRCodeFinder for dummy)
+let qrCodeFinder;
+try {
+  qrCodeFinder = new QRCodeFinder();
+  console.log('[INIT] QRCodeFinder instanciado');
+} catch (error) {
+  console.warn('[INIT] Erro ao instanciar QRCodeFinder (continuando...):', error.message);
+  qrCodeFinder = { find: () => null };
+}
 
 /**
  * Simplifica URL e codifica em base64 para QR code mais simples e legível

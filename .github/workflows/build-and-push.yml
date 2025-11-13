@@ -21,14 +21,17 @@ on:
 
 env:
   IMAGE_NAME: fluxo-barcode
+  DEFAULT_GCP_PROJECT_ID: larroude-data-prod
+  DEFAULT_GCP_REGION: us-central1
+  DEFAULT_ARTIFACT_REPOSITORY: cloud-run
 
 jobs:
   build-push-deploy:
     runs-on: ubuntu-latest
     env:
-      GCP_REGION: ${{ secrets.GCP_REGION }}
-      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-      ARTIFACT_REPOSITORY: ${{ secrets.ARTIFACT_REPOSITORY }}
+      GCP_REGION: ${{ secrets.GCP_REGION || env.DEFAULT_GCP_REGION }}
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID || env.DEFAULT_GCP_PROJECT_ID }}
+      ARTIFACT_REPOSITORY: ${{ secrets.ARTIFACT_REPOSITORY || env.DEFAULT_ARTIFACT_REPOSITORY }}
 
     steps:
       - name: Checkout repository
@@ -46,18 +49,10 @@ jobs:
 
       - name: Configure Docker for Artifact Registry
         run: |
-          if [ -z "${GCP_REGION}" ]; then
-            echo "❌ Secret GCP_REGION não configurada." >&2
-            exit 1
-          fi
           gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
 
       - name: Build Docker image
         run: |
-          if [ -z "${GCP_PROJECT_ID}" ] || [ -z "${ARTIFACT_REPOSITORY}" ]; then
-            echo "❌ Secrets GCP_PROJECT_ID ou ARTIFACT_REPOSITORY não configuradas." >&2
-            exit 1
-          fi
           IMAGE_TAG="${{ github.sha }}"
           IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REPOSITORY}/${IMAGE_NAME}:${IMAGE_TAG}"
           echo "IMAGE_URI=${IMAGE_URI}" >> $GITHUB_ENV

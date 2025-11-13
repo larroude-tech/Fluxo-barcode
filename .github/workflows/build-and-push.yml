@@ -90,7 +90,6 @@ jobs:
           image: ${{ env.IMAGE_URI }}
           env_vars: |
             NODE_ENV=production
-            PORT=3005
           secrets: ${{ steps.prepare_secrets.outputs.secrets }}
           flags: '--service-account=data-github-integration@larroude-data-prod.iam.gserviceaccount.com'
 

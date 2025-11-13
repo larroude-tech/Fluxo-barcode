@@ -71,7 +71,7 @@ jobs:
         id: deploy
         uses: google-github-actions/deploy-cloudrun@v2
         with:
-          service: ${{ secrets.CLOUD_RUN_SERVICE }}
+          service: ${{ secrets.CLOUD_RUN_SERVICE || env.IMAGE_NAME }}
           region: ${{ env.EFFECTIVE_GCP_REGION || env.DEFAULT_GCP_REGION }}
           image: ${{ env.IMAGE_URI }}
           env_vars: |
@@ -89,6 +89,6 @@ jobs:
         run: |
           REGION="${GCP_REGION:-$DEFAULT_GCP_REGION}"
           echo "Imagem publicada e deploy concluído:"
-          echo "  Serviço: ${{ secrets.CLOUD_RUN_SERVICE }}"
+          echo "  Serviço: ${{ secrets.CLOUD_RUN_SERVICE || env.IMAGE_NAME }}"
           echo "  Região:  ${REGION}"
 

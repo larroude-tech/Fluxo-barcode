@@ -25,6 +25,10 @@ env:
 jobs:
   build-push-deploy:
     runs-on: ubuntu-latest
+    env:
+      GCP_REGION: ${{ secrets.GCP_REGION }}
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      ARTIFACT_REPOSITORY: ${{ secrets.ARTIFACT_REPOSITORY }}
 
     steps:
       - name: Checkout repository
@@ -42,12 +46,20 @@ jobs:
 
       - name: Configure Docker for Artifact Registry
         run: |
-          gcloud auth configure-docker "${{ secrets.GCP_REGION }}-docker.pkg.dev" --quiet
+          if [ -z "${GCP_REGION}" ]; then
+            echo "❌ Secret GCP_REGION não configurada." >&2
+            exit 1
+          fi
+          gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
 
       - name: Build Docker image
         run: |
+          if [ -z "${GCP_PROJECT_ID}" ] || [ -z "${ARTIFACT_REPOSITORY}" ]; then
+            echo "❌ Secrets GCP_PROJECT_ID ou ARTIFACT_REPOSITORY não configuradas." >&2
+            exit 1
+          fi
           IMAGE_TAG="${{ github.sha }}"
-          IMAGE_URI="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.ARTIFACT_REPOSITORY }}/${IMAGE_NAME}:${IMAGE_TAG}"
+          IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REPOSITORY}/${IMAGE_NAME}:${IMAGE_TAG}"
           echo "IMAGE_URI=${IMAGE_URI}" >> $GITHUB_ENV
           docker build -t "${IMAGE_URI}" .
 
@@ -60,7 +72,7 @@ jobs:
         uses: google-github-actions/deploy-cloudrun@v2
         with:
           service: ${{ secrets.CLOUD_RUN_SERVICE }}
-          region: ${{ secrets.GCP_REGION }}
+          region: ${{ env.GCP_REGION }}
           image: ${{ env.IMAGE_URI }}
           env_vars: |
             NODE_ENV=production
@@ -77,5 +89,5 @@ jobs:
         run: |
           echo "Imagem publicada e deploy concluído:"
           echo "  Serviço: ${{ secrets.CLOUD_RUN_SERVICE }}"
-          echo "  Região:  ${{ secrets.GCP_REGION }}"
+          echo "  Região:  ${GCP_REGION}"
 

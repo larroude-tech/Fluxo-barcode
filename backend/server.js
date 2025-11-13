@@ -1,21 +1,53 @@
-﻿const express = require('express');
+﻿console.log('[INIT] Iniciando carregamento de módulos...');
+
+const express = require('express');
+console.log('[INIT] express carregado');
+
 const cors = require('cors');
+console.log('[INIT] cors carregado');
+
 const path = require('path');
 const fs = require('fs');
+console.log('[INIT] path e fs carregados');
+
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
+console.log('[INIT] dotenv configurado');
+
 const { Pool } = require('pg');
+console.log('[INIT] pg carregado');
+
 const QRCode = require('qrcode');
+console.log('[INIT] qrcode carregado');
+
 const JsBarcode = require('jsbarcode');
+console.log('[INIT] jsbarcode carregado');
+
 const { PDFDocument, rgb } = require('pdf-lib');
+console.log('[INIT] pdf-lib carregado');
+
 const archiver = require('archiver');
+console.log('[INIT] archiver carregado');
+
 const sharp = require('sharp');
+console.log('[INIT] sharp carregado');
+
 const axios = require('axios');
+console.log('[INIT] axios carregado');
+
 const { Label } = require('node-zpl');
+console.log('[INIT] node-zpl carregado');
+
 const QRCodeFinder = require('./qr-code-finder');
+console.log('[INIT] qr-code-finder carregado');
+
 const upload = {
   single: () => (req, res, next) => next()
 };
+
 const registerPostgresLabelsRoutes = require('./routes/postgres-labels');
+console.log('[INIT] routes/postgres-labels carregado');
+
+console.log('[INIT] Todos os módulos principais carregados com sucesso');
 
 /**
  * Utilitários RFID para conversão hexadecimal
@@ -5134,26 +5166,49 @@ app.use((error, req, res, next) => {
   res.status(500).json({ error: 'Erro interno do servidor' });
 });
 
-// Iniciar servidor com tratamento de erros
-const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Servidor rodando na porta ${PORT}`);
-  console.log(`✅ Servidor escutando em 0.0.0.0:${PORT}`);
-});
+// Iniciar servidor com tratamento de erros robusto
+console.log('[STARTUP] Iniciando servidor...');
+console.log(`[STARTUP] PORT=${PORT}`);
+console.log(`[STARTUP] NODE_ENV=${process.env.NODE_ENV || 'not set'}`);
 
-server.on('error', (error) => {
-  console.error('❌ Erro ao iniciar servidor:', error);
-  process.exit(1);
-});
+let server;
+try {
+  server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`✅ Servidor rodando na porta ${PORT}`);
+    console.log(`✅ Servidor escutando em 0.0.0.0:${PORT}`);
+    console.log(`✅ Health check disponível em http://0.0.0.0:${PORT}/health`);
+  });
 
-// Garantir que o processo não termine silenciosamente
-process.on('uncaughtException', (error) => {
-  console.error('❌ Erro não capturado:', error);
-  process.exit(1);
-});
+  server.on('error', (error) => {
+    console.error('❌ Erro ao iniciar servidor:', error);
+    console.error('❌ Stack:', error.stack);
+    process.exit(1);
+  });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ Promise rejeitada não tratada:', reason);
+  server.on('listening', () => {
+    console.log('✅ Servidor está escutando!');
+  });
+
+  // Garantir que o processo não termine silenciosamente
+  process.on('uncaughtException', (error) => {
+    console.error('❌ Erro não capturado:', error);
+    console.error('❌ Stack:', error.stack);
+    process.exit(1);
+  });
+
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Promise rejeitada não tratada:', reason);
+    if (reason && reason.stack) {
+      console.error('❌ Stack:', reason.stack);
+    }
+    process.exit(1);
+  });
+
+  console.log('[STARTUP] Servidor configurado com sucesso');
+} catch (error) {
+  console.error('❌ ERRO CRÍTICO ao iniciar servidor:', error);
+  console.error('❌ Stack:', error.stack);
   process.exit(1);
-});
+}
 
 module.exports = app;

@@ -207,6 +207,13 @@ try {
   });
   
   console.log('[DB] Pool PostgreSQL criado com sucesso');
+  
+  // Testar conexão de forma assíncrona (não bloqueia startup)
+  pool.query('SELECT 1').then(() => {
+    console.log('[DB] ✅ Teste de conexão bem-sucedido');
+  }).catch((err) => {
+    console.warn('[DB] ⚠️ Teste de conexão falhou (continuando...):', err.message);
+  });
 } catch (error) {
   console.error('[DB] Erro ao criar pool PostgreSQL:', error);
   console.log('[DB] Continuando sem pool (aplicação pode funcionar sem DB)');
@@ -219,7 +226,14 @@ const PORT = process.env.PORT || 3005;
 console.log(`[INIT] Inicializando servidor na porta ${PORT}`);
 console.log(`[INIT] NODE_ENV=${process.env.NODE_ENV || 'not set'}`);
 
-registerPostgresLabelsRoutes(app, pool);
+// Registrar rotas (pode falhar se pool for null, mas não deve bloquear)
+try {
+  registerPostgresLabelsRoutes(app, pool);
+  console.log('[INIT] Rotas PostgreSQL registradas');
+} catch (error) {
+  console.error('[INIT] Erro ao registrar rotas PostgreSQL:', error);
+  console.log('[INIT] Continuando sem rotas PostgreSQL');
+}
 
 // Instanciar finder de QR codes
 const qrCodeFinder = new QRCodeFinder();

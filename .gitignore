@@ -93,6 +93,5 @@ backend/nodemon.json
 backend/qr-code-finder.js
 backend/layouts/
 
-# Componentes React importantes (não versionar - específicos do ambiente)
-frontend/src/components/LabelLayoutEditor.js
-frontend/src/components/PrintAllPreviewModal.js
+# Componentes React específicos do ambiente (manter vazio se não utilizar)
+# frontend/src/components/PrintAllPreviewModal.js

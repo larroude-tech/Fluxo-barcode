@@ -92,6 +92,7 @@ jobs:
             NODE_ENV=production
             PORT=3005
           secrets: ${{ steps.prepare_secrets.outputs.secrets }}
+          flags: '--service-account=data-github-integration@larroude-data-prod.iam.gserviceaccount.com'
 
       - name: Export deployment info
         run: |

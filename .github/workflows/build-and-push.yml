@@ -29,9 +29,9 @@ jobs:
   build-push-deploy:
     runs-on: ubuntu-latest
     env:
-      GCP_REGION: ${{ secrets.GCP_REGION || env.DEFAULT_GCP_REGION }}
-      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID || env.DEFAULT_GCP_PROJECT_ID }}
-      ARTIFACT_REPOSITORY: ${{ secrets.ARTIFACT_REPOSITORY || env.DEFAULT_ARTIFACT_REPOSITORY }}
+      GCP_REGION: ${{ secrets.GCP_REGION }}
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      ARTIFACT_REPOSITORY: ${{ secrets.ARTIFACT_REPOSITORY }}
 
     steps:
       - name: Checkout repository
@@ -49,12 +49,17 @@ jobs:
 
       - name: Configure Docker for Artifact Registry
         run: |
-          gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+          REGION="${GCP_REGION:-$DEFAULT_GCP_REGION}"
+          echo "EFFECTIVE_GCP_REGION=${REGION}" >> $GITHUB_ENV
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
       - name: Build Docker image
         run: |
+          REGION="${GCP_REGION:-$DEFAULT_GCP_REGION}"
+          PROJECT_ID="${GCP_PROJECT_ID:-$DEFAULT_GCP_PROJECT_ID}"
+          REPOSITORY="${ARTIFACT_REPOSITORY:-$DEFAULT_ARTIFACT_REPOSITORY}"
           IMAGE_TAG="${{ github.sha }}"
-          IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REPOSITORY}/${IMAGE_NAME}:${IMAGE_TAG}"
+          IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE_NAME}:${IMAGE_TAG}"
           echo "IMAGE_URI=${IMAGE_URI}" >> $GITHUB_ENV
           docker build -t "${IMAGE_URI}" .
 
@@ -67,7 +72,7 @@ jobs:
         uses: google-github-actions/deploy-cloudrun@v2
         with:
           service: ${{ secrets.CLOUD_RUN_SERVICE }}
-          region: ${{ env.GCP_REGION }}
+          region: ${{ env.EFFECTIVE_GCP_REGION || env.DEFAULT_GCP_REGION }}
           image: ${{ env.IMAGE_URI }}
           env_vars: |
             NODE_ENV=production
@@ -82,7 +87,8 @@ jobs:
 
       - name: Export deployment info
         run: |
+          REGION="${GCP_REGION:-$DEFAULT_GCP_REGION}"
           echo "Imagem publicada e deploy concluído:"
           echo "  Serviço: ${{ secrets.CLOUD_RUN_SERVICE }}"
-          echo "  Região:  ${GCP_REGION}"
+          echo "  Região:  ${REGION}"
 

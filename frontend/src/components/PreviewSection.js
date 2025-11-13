@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { AlertCircle, ZoomIn, Download, Info, Printer, List, Search, X, Grid3X3, LayoutList, Barcode, Package, Palette, Ruler, Hash, FileText, Settings } from 'lucide-react';
 import { toast } from 'react-toastify';
-import LabelLayoutEditor from './LabelLayoutEditor';
+import LabelLayoutEditor from './LabelLayoutEditor.js';
 import './PrintList.css';
 
 // Componente atualizado para exibir todas as etiquetas em tamanho real

@@ -154,24 +154,38 @@ const createDatabasePool = () => {
   return new Pool(baseConfig);
 };
 
-const pool = createDatabasePool();
+// Criar pool de banco de dados (não bloqueia inicialização)
+let pool;
+try {
+  pool = createDatabasePool();
+  
+  pool.on('connect', (client) => {
+    const pid = client?.processID || 'n/a';
+    console.log(`[DB] Conexão estabelecida com PostgreSQL (pid=${pid})`);
+  });
 
-pool.on('connect', (client) => {
-  const pid = client?.processID || 'n/a';
-  console.log(`[DB] Conexão estabelecida com PostgreSQL (pid=${pid})`);
-});
+  pool.on('acquire', (client) => {
+    const pid = client?.processID || 'n/a';
+    console.log(`[DB] Cliente PostgreSQL adquirido do pool (pid=${pid})`);
+  });
 
-pool.on('acquire', (client) => {
-  const pid = client?.processID || 'n/a';
-  console.log(`[DB] Cliente PostgreSQL adquirido do pool (pid=${pid})`);
-});
-
-pool.on('error', (err) => {
-  console.error('[DB] Erro inesperado no pool PostgreSQL:', err);
-});
+  pool.on('error', (err) => {
+    console.error('[DB] Erro inesperado no pool PostgreSQL:', err);
+    // Não encerra o servidor se houver erro no pool
+  });
+  
+  console.log('[DB] Pool PostgreSQL criado com sucesso');
+} catch (error) {
+  console.error('[DB] Erro ao criar pool PostgreSQL:', error);
+  console.log('[DB] Continuando sem pool (aplicação pode funcionar sem DB)');
+  pool = null;
+}
 
 const app = express();
 const PORT = process.env.PORT || 3005;
+
+console.log(`[INIT] Inicializando servidor na porta ${PORT}`);
+console.log(`[INIT] NODE_ENV=${process.env.NODE_ENV || 'not set'}`);
 
 registerPostgresLabelsRoutes(app, pool);
 
@@ -5080,8 +5094,26 @@ app.use((error, req, res, next) => {
   res.status(500).json({ error: 'Erro interno do servidor' });
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
+// Iniciar servidor com tratamento de erros
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Servidor rodando na porta ${PORT}`);
+  console.log(`✅ Servidor escutando em 0.0.0.0:${PORT}`);
+});
+
+server.on('error', (error) => {
+  console.error('❌ Erro ao iniciar servidor:', error);
+  process.exit(1);
+});
+
+// Garantir que o processo não termine silenciosamente
+process.on('uncaughtException', (error) => {
+  console.error('❌ Erro não capturado:', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Promise rejeitada não tratada:', reason);
+  process.exit(1);
 });
 
 module.exports = app;

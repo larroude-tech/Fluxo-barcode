@@ -25,14 +25,20 @@ jobs:
         run: |
           echo "🔍 Verificando configuração do secret..."
           
+          # Usar GCP_SA_KEY se GDRIVE_SERVICE_ACCOUNT_JSON não estiver configurado
+          if [ -z "${GDRIVE_SERVICE_ACCOUNT_JSON}" ] || [ "${GDRIVE_SERVICE_ACCOUNT_JSON}" = "" ]; then
+            echo "⚠️  GDRIVE_SERVICE_ACCOUNT_JSON não encontrado, usando GCP_SA_KEY..."
+            GDRIVE_SERVICE_ACCOUNT_JSON="${GCP_SA_KEY}"
+          fi
+          
           # Verificar se o secret existe e não está vazio
           if [ -z "${GDRIVE_SERVICE_ACCOUNT_JSON}" ] || [ "${GDRIVE_SERVICE_ACCOUNT_JSON}" = "" ]; then
-            echo "❌ ERRO: O secret GDRIVE_SERVICE_ACCOUNT_JSON não está configurado ou está vazio"
+            echo "❌ ERRO: O secret GCP_SA_KEY não está configurado ou está vazio"
             echo ""
             echo "📝 Para corrigir:"
             echo "   1. Vá em Settings → Secrets and variables → Actions"
-            echo "   2. Crie ou edite o secret chamado: GDRIVE_SERVICE_ACCOUNT_JSON"
-            echo "   3. Cole o conteúdo COMPLETO do arquivo JSON da service account"
+            echo "   2. Verifique o secret chamado: GCP_SA_KEY"
+            echo "   3. Deve conter o conteúdo COMPLETO do arquivo JSON da service account"
             echo "   4. O JSON deve começar com '{' e terminar com '}'"
             echo ""
             exit 1
@@ -49,7 +55,7 @@ jobs:
           
           # Validar se é um JSON válido
           if ! echo "${GDRIVE_SERVICE_ACCOUNT_JSON}" | jq . > /dev/null 2>&1; then
-            echo "❌ ERRO: GDRIVE_SERVICE_ACCOUNT_JSON não é um JSON válido"
+            echo "❌ ERRO: O JSON da service account não é válido"
             echo "   Erro ao parsear JSON. Verifique se o conteúdo está correto."
             exit 1
           fi
@@ -83,7 +89,8 @@ jobs:
           
           echo "✅ Service account JSON validado e salvo com sucesso"
         env:
-          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON || secrets.GCP_SA_KEY }}
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
 
       - name: Criar config do rclone (Drive via Service Account)
         run: |

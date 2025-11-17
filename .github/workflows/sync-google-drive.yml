@@ -16,14 +16,41 @@ jobs:
       - name: Checkout do repositório
         uses: actions/checkout@v4
 
-      - name: Instalar rclone
+      - name: Instalar rclone e jq
         run: |
           sudo -n apt-get update
-          sudo -n apt-get install -y rclone
+          sudo -n apt-get install -y rclone jq
 
-      - name: Escrever chave da Service Account
+      - name: Validar e escrever chave da Service Account
         run: |
+          if [ -z "${GDRIVE_SERVICE_ACCOUNT_JSON}" ]; then
+            echo "❌ Erro: GDRIVE_SERVICE_ACCOUNT_JSON secret não está configurado ou está vazio"
+            exit 1
+          fi
+          
+          # Validar se é um JSON válido
+          echo "${GDRIVE_SERVICE_ACCOUNT_JSON}" | jq . > /dev/null 2>&1
+          if [ $? -ne 0 ]; then
+            echo "❌ Erro: GDRIVE_SERVICE_ACCOUNT_JSON não é um JSON válido"
+            exit 1
+          fi
+          
+          # Escrever arquivo da service account
           echo "${GDRIVE_SERVICE_ACCOUNT_JSON}" > /home/runner/work/service-account.json
+          
+          # Validar que o arquivo foi criado corretamente
+          if [ ! -f /home/runner/work/service-account.json ]; then
+            echo "❌ Erro: Falha ao criar arquivo service-account.json"
+            exit 1
+          fi
+          
+          # Verificar se contém campos obrigatórios
+          if ! grep -q '"type"' /home/runner/work/service-account.json || ! grep -q '"project_id"' /home/runner/work/service-account.json; then
+            echo "❌ Erro: JSON da service account parece estar incompleto"
+            exit 1
+          fi
+          
+          echo "✅ Service account JSON validado e salvo com sucesso"
         env:
           GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
 

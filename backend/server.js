@@ -1501,7 +1501,7 @@ app.post('/api/print-individual', async (req, res) => {
           // Dados básicos do item
           const styleName = String(item.STYLE_NAME || 'N/A');
           const vpn = String(item.VPN || 'N/A');
-          const color = String(item.COLOR || 'N/A');
+          const color = String(item.DESCRIPTION || item.COLOR || 'N/A');
           const size = String(item.SIZE || 'N/A');
           
           // Usar PO do CSV (já extraído no upload)
@@ -1853,7 +1853,7 @@ app.post('/api/print-all', async (req, res) => {
           // Dados básicos do item
           const styleName = String(item.STYLE_NAME || 'N/A');
           const vpn = String(item.VPN || item.SKU || 'N/A');
-          const color = String(item.COLOR || 'N/A');
+          const color = String(item.DESCRIPTION || item.COLOR || 'N/A');
           const size = String(item.SIZE || 'N/A');
           const barcodeBase = String(item.BARCODE || item.VPN || '000000000000').substring(0, 12).padStart(12, '0');
           
@@ -2433,7 +2433,7 @@ async function generateLabelPreview(item) {
     // Extrair dados do item
     const styleName = String(item.STYLE_NAME || item.NAME || "N/A");
     const vpn = String(item.VPN || item.SKU || "N/A");
-    const color = String(item.COLOR || "N/A");
+  const color = String(item.DESCRIPTION || item.COLOR || "N/A");
     const size = String(item.SIZE || "N/A");
     const barcode = String(item.BARCODE || item.VPN || "N/A");
     const ref = String(item.REF || "N/A");
@@ -2463,7 +2463,7 @@ async function generateLabelPreview(item) {
 ^LL376
 ^FO50,50^A0N,30,30^FD${styleName}^FS
 ^FO50,100^A0N,20,20^FDVPN: ${vpn}^FS
-^FO50,130^A0N,20,20^FDCOLOR: ${color}^FS
+^FO50,130^A0N,20,20^FDMATERIAL/COLOR: ${color}^FS
 ^FO50,160^A0N,20,20^FDSIZE: ${size}^FS
 ^XZ`;
       console.warn("Usando template básico para preview");
@@ -2803,7 +2803,7 @@ function generateLabelZPL(item) {
   
   const styleName = String(item.STYLE_NAME || item.NAME || 'N/A');
   const vpn = String(item.VPN || item.SKU || 'N/A');
-  const color = String(item.COLOR || 'N/A');
+  const color = String(item.DESCRIPTION || item.COLOR || 'N/A');
   const size = String(item.SIZE || 'N/A');
   const barcode = String(item.BARCODE || item.VPN || 'N/A');
   const ref = String(item.REF || 'N/A');
@@ -2838,8 +2838,8 @@ function generateLabelZPL(item) {
 ^FO20,105^A0N,14,14^FDVPN:^FS
 ^FO70,105^A0N,14,14^FD${vpn}^FS
 
-^FO20,125^A0N,14,14^FDCOLOR:^FS
-^FO90,125^A0N,14,14^FD${color}^FS
+^FO20,125^A0N,14,14^FDMATERIAL/COLOR:^FS
+^FO110,125^A0N,14,14^FD${color}^FS
 ^FO400,125^A0N,14,14^FDSIZE:^FS
 ^FO450,125^A0N,14,14^FD${size}^FS
 
@@ -2899,7 +2899,7 @@ async function generateLabelPDF(item) {
     color: rgb(0, 0, 0)
   });
   
-  page.drawText(`COLOR: ${String(item.COLOR || 'N/A')}`, {
+  page.drawText(`MATERIAL / COLOR: ${String(item.DESCRIPTION || item.COLOR || 'N/A')}`, {
     x: 65,
     y: height - 55,
     size: 10,

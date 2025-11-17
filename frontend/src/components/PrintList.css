@@ -102,6 +102,82 @@
   gap: 12px;
 }
 
+.invalid-labels-alert {
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid #fcd34d;
+  background: #fffbeb;
+  border-radius: 10px;
+  color: #92400e;
+}
+
+.invalid-labels-header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.invalid-labels-header strong {
+  display: block;
+  color: #78350f;
+}
+
+.invalid-labels-header span {
+  font-size: 13px;
+  color: #b45309;
+}
+
+.invalid-labels-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.invalid-labels-list li {
+  background: #fff7ed;
+  border: 1px dashed #fbbf24;
+  padding: 10px 12px;
+  border-radius: 8px;
+}
+
+.invalid-label-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: #92400e;
+}
+
+.invalid-label-id {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.invalid-label-name {
+  color: #7c2d12;
+}
+
+.invalid-label-missing {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #b45309;
+}
+
+.material-description {
+  display: inline-block;
+  color: #1f2937;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.table-cell .material-description {
+  white-space: normal;
+}
+
 .etiquetas-preview-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
@@ -692,6 +768,12 @@
   transition: all 0.2s ease;
 }
 
+.grid-item.grid-item-invalid {
+  border-color: #f97316;
+  background: #fff7ed;
+  box-shadow: inset 0 0 0 1px rgba(249, 115, 22, 0.2);
+}
+
 .grid-item:hover {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   transform: translateY(-2px);
@@ -720,6 +802,10 @@
   flex-direction: column;
   gap: 8px;
   margin-bottom: 16px;
+}
+
+.missing-fields-inline {
+  color: #c2410c;
 }
 
 .item-field {
@@ -1042,6 +1128,11 @@
   transition: background-color 0.2s ease;
 }
 
+.table-row.row-invalid {
+  background: #fff7ed;
+  border-left: 4px solid #f97316;
+}
+
 .table-row:hover {
   background-color: #f9fafb;
 }
@@ -1118,6 +1209,19 @@
   transition: all 0.2s ease;
   min-width: 100px;
   justify-content: center;
+}
+
+.missing-fields-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  color: #c2410c;
+  margin-bottom: 8px;
+}
+
+.missing-fields-hint svg {
+  flex-shrink: 0;
 }
 
 .btn-print:hover:not(:disabled) {

@@ -1,0 +1,78 @@
+name: Extrair Google Drive para o repositório
+
+on:
+  workflow_dispatch: # permite rodar manualmente
+  schedule:
+    - cron: "0 6 * * *" # opcional: todos os dias às 06:00 UTC
+
+permissions:
+  contents: write # necessário para comitar alterações
+
+jobs:
+  sync-drive-to-repo:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Instalar rclone
+        run: |
+          sudo -n apt-get update
+          sudo -n apt-get install -y rclone
+
+      - name: Escrever chave da Service Account
+        run: |
+          echo "${GDRIVE_SERVICE_ACCOUNT_JSON}" > /home/runner/work/service-account.json
+        env:
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+
+      - name: Criar config do rclone (Drive via Service Account)
+        run: |
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf << 'EOF'
+          [gdrive]
+          type = drive
+          scope = drive
+          service_account_file = /home/runner/work/service-account.json
+          # root_folder_id aponta a pasta que você compartilhou
+          root_folder_id = 1F22HTbcjiLDcIlVWnEqOn3JRgznWZ80K
+          EOF
+
+      - name: Sincronizar do Drive para pasta local
+        run: |
+          mkdir -p drive_content
+
+          # Sincronizar imagens e outros arquivos do Google Drive
+          # O rclone baixa arquivos nativos (imagens, PDFs, etc.) diretamente
+          # Para Google Docs/Sheets, pode exportar se necessário
+          EXPORTS="png,jpg,jpeg,gif,webp,pdf,svg"
+
+          rclone sync gdrive: drive_content \
+            --drive-root-folder-id "1F22HTbcjiLDcIlVWnEqOn3JRgznWZ80K" \
+            --drive-export-formats "${EXPORTS}" \
+            --create-empty-src-dirs \
+            --checksum \
+            --fast-list \
+            --transfers=8 \
+            --checkers=16 \
+            --verbose \
+            --progress
+
+      - name: Normalizar permissões (evita ruído no git)
+        run: |
+          git config core.fileMode false
+
+      - name: Commit e push (se houver mudanças)
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add -A
+            TS=$(date -u +"%Y-%m-%d %H:%M:%SZ")
+            git commit -m "chore: sync do Google Drive → repo (${TS})"
+            git push
+          else
+            echo "Sem mudanças para comitar."
+          fi
+

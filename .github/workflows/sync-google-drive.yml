@@ -41,14 +41,14 @@ jobs:
 
       - name: Sincronizar do Drive para pasta local
         run: |
-          mkdir -p drive_content
+          mkdir -p images
 
           # Sincronizar imagens e outros arquivos do Google Drive
           # O rclone baixa arquivos nativos (imagens, PDFs, etc.) diretamente
           # Para Google Docs/Sheets, pode exportar se necessário
           EXPORTS="png,jpg,jpeg,gif,webp,pdf,svg"
 
-          rclone sync gdrive: drive_content \
+          rclone sync gdrive: images \
             --drive-root-folder-id "1F22HTbcjiLDcIlVWnEqOn3JRgznWZ80K" \
             --drive-export-formats "${EXPORTS}" \
             --create-empty-src-dirs \

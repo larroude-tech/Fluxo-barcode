@@ -25,45 +25,53 @@ jobs:
         run: |
           echo "🔍 Verificando configuração do secret..."
           
-          # Usar GCP_SA_KEY se GDRIVE_SERVICE_ACCOUNT_JSON não estiver configurado
-          if [ -z "${GDRIVE_SERVICE_ACCOUNT_JSON}" ] || [ "${GDRIVE_SERVICE_ACCOUNT_JSON}" = "" ]; then
-            echo "⚠️  GDRIVE_SERVICE_ACCOUNT_JSON não encontrado, usando GCP_SA_KEY..."
-            GDRIVE_SERVICE_ACCOUNT_JSON="${GCP_SA_KEY}"
-          fi
-          
-          # Verificar se o secret existe e não está vazio
-          if [ -z "${GDRIVE_SERVICE_ACCOUNT_JSON}" ] || [ "${GDRIVE_SERVICE_ACCOUNT_JSON}" = "" ]; then
-            echo "❌ ERRO: O secret GCP_SA_KEY não está configurado ou está vazio"
+          # Determinar qual secret usar (com fallback para GCP_SA_KEY)
+          SA_JSON=""
+          if [ -n "${GDRIVE_SERVICE_ACCOUNT_JSON}" ] && [ "${GDRIVE_SERVICE_ACCOUNT_JSON}" != "" ]; then
+            echo "📦 Usando secret: GDRIVE_SERVICE_ACCOUNT_JSON"
+            SA_JSON="${GDRIVE_SERVICE_ACCOUNT_JSON}"
+          elif [ -n "${GCP_SA_KEY}" ] && [ "${GCP_SA_KEY}" != "" ]; then
+            echo "📦 Usando secret: GCP_SA_KEY (fallback)"
+            SA_JSON="${GCP_SA_KEY}"
+          else
+            echo "❌ ERRO: Nenhum secret encontrado!"
+            echo "   GDRIVE_SERVICE_ACCOUNT_JSON: $([ -z "${GDRIVE_SERVICE_ACCOUNT_JSON}" ] && echo 'vazio' || echo 'configurado')"
+            echo "   GCP_SA_KEY: $([ -z "${GCP_SA_KEY}" ] && echo 'vazio' || echo 'configurado')"
             echo ""
             echo "📝 Para corrigir:"
             echo "   1. Vá em Settings → Secrets and variables → Actions"
-            echo "   2. Verifique o secret chamado: GCP_SA_KEY"
+            echo "   2. Verifique que o secret GCP_SA_KEY está configurado"
             echo "   3. Deve conter o conteúdo COMPLETO do arquivo JSON da service account"
             echo "   4. O JSON deve começar com '{' e terminar com '}'"
-            echo ""
             exit 1
           fi
           
           # Verificar tamanho mínimo (JSON válido deve ter pelo menos alguns caracteres)
-          LENGTH=$(echo -n "${GDRIVE_SERVICE_ACCOUNT_JSON}" | wc -c)
+          LENGTH=$(echo -n "${SA_JSON}" | wc -c)
           if [ "$LENGTH" -lt 100 ]; then
-            echo "❌ ERRO: O secret parece estar muito curto (${LENGTH} caracteres). Um JSON válido deve ter pelo menos 100 caracteres."
+            echo "❌ ERRO: O secret parece estar muito curto (${LENGTH} caracteres)"
+            echo "   Um JSON válido deve ter pelo menos 100 caracteres"
+            echo "   Primeiros 50 caracteres: $(echo -n "${SA_JSON}" | head -c 50)..."
             exit 1
           fi
           
           echo "✅ Secret encontrado (${LENGTH} caracteres)"
           
           # Validar se é um JSON válido
-          if ! echo "${GDRIVE_SERVICE_ACCOUNT_JSON}" | jq . > /dev/null 2>&1; then
+          if ! echo "${SA_JSON}" | jq . > /dev/null 2>&1; then
             echo "❌ ERRO: O JSON da service account não é válido"
-            echo "   Erro ao parsear JSON. Verifique se o conteúdo está correto."
+            echo "   Erro ao parsear JSON"
+            echo ""
+            echo "📋 Debug - Primeiras 200 caracteres:"
+            echo "${SA_JSON}" | head -c 200
+            echo ""
             exit 1
           fi
           
           echo "✅ JSON válido"
           
-          # Escrever arquivo da service account
-          echo "${GDRIVE_SERVICE_ACCOUNT_JSON}" > /home/runner/work/service-account.json
+          # Escrever arquivo da service account usando printf para evitar problemas com caracteres especiais
+          printf '%s' "${SA_JSON}" > /home/runner/work/service-account.json
           
           # Validar que o arquivo foi criado corretamente
           if [ ! -f /home/runner/work/service-account.json ]; then
@@ -80,16 +88,26 @@ jobs:
           
           echo "✅ Arquivo criado (${FILE_SIZE} bytes)"
           
+          # Validar JSON novamente após escrever no arquivo
+          if ! jq . /home/runner/work/service-account.json > /dev/null 2>&1; then
+            echo "❌ ERRO: JSON inválido após escrever no arquivo"
+            echo "   Arquivo pode ter sido corrompido"
+            exit 1
+          fi
+          
           # Verificar se contém campos obrigatórios
           if ! grep -q '"type"' /home/runner/work/service-account.json || ! grep -q '"project_id"' /home/runner/work/service-account.json; then
             echo "❌ ERRO: JSON da service account parece estar incompleto"
             echo "   Deve conter os campos: type, project_id"
+            echo ""
+            echo "📋 Campos encontrados no JSON:"
+            jq 'keys' /home/runner/work/service-account.json || echo "Não foi possível listar campos"
             exit 1
           fi
           
           echo "✅ Service account JSON validado e salvo com sucesso"
         env:
-          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON || secrets.GCP_SA_KEY }}
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
           GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
 
       - name: Criar config do rclone (Drive via Service Account)

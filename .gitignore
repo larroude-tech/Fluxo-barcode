@@ -84,7 +84,7 @@ yarn.lock
 config/
 docs/
 examples/
-templates/
+# templates/ - REMOVIDO: templates precisam estar no repositório para o build do Docker
 tests/
 scripts/
 

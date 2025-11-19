@@ -37,6 +37,16 @@ console.log('[INIT] axios carregado');
 const { Label } = require('node-zpl');
 console.log('[INIT] node-zpl carregado');
 
+// Image Proxy Starter (opcional - inicia API Python automaticamente)
+let imageProxyStarter;
+try {
+  imageProxyStarter = require('./image-proxy-starter');
+  console.log('[INIT] image-proxy-starter carregado');
+} catch (error) {
+  console.warn('[INIT] image-proxy-starter não encontrado (continuando...):', error.message);
+  imageProxyStarter = null;
+}
+
 // QRCodeFinder pode não existir, tornar opcional
 let QRCodeFinder;
 try {
@@ -204,6 +214,113 @@ const createDatabasePool = () => {
   return new Pool(baseConfig);
 };
 
+/**
+ * Função para fazer refresh da view do banco de dados
+ * Detecta automaticamente se é view normal ou materializada
+ */
+const refreshDatabaseView = async (pool) => {
+  if (!pool) {
+    console.log('[DB] [REFRESH] Pool não disponível, pulando refresh');
+    return;
+  }
+
+  try {
+    console.log('[DB] [REFRESH] Iniciando refresh automático da view...');
+    
+    // Verificar se a view é materializada
+    const checkViewQuery = `
+      SELECT 
+        schemaname, 
+        viewname, 
+        definition
+      FROM pg_views 
+      WHERE schemaname = 'senda' 
+      AND viewname = 'vw_labels_variants_barcode'
+    `;
+    
+    const { rows: viewInfo } = await pool.query(checkViewQuery);
+    
+    if (viewInfo.length === 0) {
+      // Verificar se é materializada
+      const checkMatViewQuery = `
+        SELECT 
+          schemaname, 
+          matviewname, 
+          definition
+        FROM pg_matviews 
+        WHERE schemaname = 'senda' 
+        AND matviewname = 'vw_labels_variants_barcode'
+      `;
+      
+      const { rows: matViewInfo } = await pool.query(checkMatViewQuery);
+      
+      if (matViewInfo.length > 0) {
+        // É uma view materializada, fazer REFRESH
+        console.log('[DB] [REFRESH] View materializada detectada, executando REFRESH...');
+        await pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY senda.vw_labels_variants_barcode');
+        console.log('[DB] [REFRESH] ✅ View materializada atualizada com sucesso');
+      } else {
+        console.log('[DB] [REFRESH] ⚠️ View não encontrada no banco de dados');
+      }
+    } else {
+      // É uma view normal, forçar recarregamento agressivo
+      console.log('[DB] [REFRESH] View normal detectada, forçando recarregamento completo...');
+      
+      const client = await pool.connect();
+      try {
+        // Limpar todos os planos de execução em cache
+        await client.query('DEALLOCATE ALL');
+        
+        // Iniciar uma nova transação isolada
+        await client.query('BEGIN ISOLATION LEVEL READ COMMITTED');
+        
+        // Consultar a definição da view para forçar recarregamento
+        await client.query(`
+          SELECT definition 
+          FROM pg_views 
+          WHERE schemaname = 'senda' 
+          AND viewname = 'vw_labels_variants_barcode'
+        `);
+        
+        // Fazer uma consulta real na view para garantir que use a nova definição
+        await client.query('SELECT COUNT(*) FROM senda.vw_labels_variants_barcode LIMIT 1');
+        
+        await client.query('COMMIT');
+        
+        // Descartar todas as configurações da sessão
+        await client.query('DISCARD ALL');
+        
+        console.log('[DB] [REFRESH] ✅ View normal recarregada (cache completamente limpo)');
+      } catch (error) {
+        try {
+          await client.query('ROLLBACK');
+        } catch (rollbackError) {
+          // Ignorar erro de rollback
+        }
+        throw error;
+      } finally {
+        client.release();
+      }
+      
+      // Aguardar um momento e fazer verificação final
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      const finalClient = await pool.connect();
+      try {
+        await finalClient.query('SELECT 1 FROM senda.vw_labels_variants_barcode LIMIT 1');
+        console.log('[DB] [REFRESH] ✅ Verificação final: view acessível e atualizada');
+      } finally {
+        finalClient.release();
+      }
+    }
+  } catch (error) {
+    console.error('[DB] [REFRESH] Erro ao fazer refresh da view:', error.message);
+    // Não lançar o erro - apenas logar e continuar
+    // Isso evita promises rejeitadas não tratadas
+    console.warn('[DB] [REFRESH] Continuando sem refresh da view...');
+  }
+};
+
 // Criar pool de banco de dados (não bloqueia inicialização)
 let pool;
 try {
@@ -227,10 +344,24 @@ try {
   console.log('[DB] Pool PostgreSQL criado com sucesso');
   
   // Testar conexão de forma assíncrona (não bloqueia startup)
-  pool.query('SELECT 1').then(() => {
-    console.log('[DB] ✅ Teste de conexão bem-sucedido');
+  // Usar Promise.resolve().then() para garantir que todas as promises sejam tratadas
+  Promise.resolve().then(async () => {
+    try {
+      await pool.query('SELECT 1');
+      console.log('[DB] ✅ Teste de conexão bem-sucedido');
+      
+      // Refresh automático da view na inicialização
+      try {
+        await refreshDatabaseView(pool);
+      } catch (refreshError) {
+        console.warn('[DB] ⚠️ Erro ao fazer refresh da view na inicialização (continuando...):', refreshError.message);
+      }
+    } catch (err) {
+      console.warn('[DB] ⚠️ Teste de conexão falhou (continuando...):', err.message);
+    }
   }).catch((err) => {
-    console.warn('[DB] ⚠️ Teste de conexão falhou (continuando...):', err.message);
+    // Capturar qualquer erro não tratado na promise
+    console.warn('[DB] ⚠️ Erro não tratado no teste de conexão (continuando...):', err.message);
   });
 } catch (error) {
   console.error('[DB] Erro ao criar pool PostgreSQL:', error);
@@ -244,12 +375,31 @@ const PORT = process.env.PORT || 3005;
 console.log(`[INIT] Inicializando servidor na porta ${PORT}`);
 console.log(`[INIT] NODE_ENV=${process.env.NODE_ENV || 'not set'}`);
 
+// Configurar CORS PRIMEIRO (antes de qualquer rota)
+app.use(cors({
+  origin: true, // Permite qualquer origem (ajuste para produção)
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// Middleware para parsing JSON
+const maxUploadSize = process.env.MAX_UPLOAD_SIZE || '50mb';
+app.use(express.json({ limit: maxUploadSize }));
+app.use(express.urlencoded({ limit: maxUploadSize, extended: true }));
+app.use(express.static('public'));
+
 // Registrar rotas (pode falhar se pool for null, mas não deve bloquear)
 try {
-  registerPostgresLabelsRoutes(app, pool);
-  console.log('[INIT] Rotas PostgreSQL registradas');
+  if (pool) {
+    registerPostgresLabelsRoutes(app, pool);
+    console.log('[INIT] ✅ Rotas PostgreSQL registradas com sucesso');
+  } else {
+    console.warn('[INIT] ⚠️ Pool PostgreSQL não disponível, rotas PostgreSQL não serão registradas');
+    console.warn('[INIT] ⚠️ Configure as variáveis de ambiente do banco de dados para habilitar as rotas');
+  }
 } catch (error) {
-  console.error('[INIT] Erro ao registrar rotas PostgreSQL:', error);
+  console.error('[INIT] ❌ Erro ao registrar rotas PostgreSQL:', error);
   console.log('[INIT] Continuando sem rotas PostgreSQL');
 }
 
@@ -295,11 +445,10 @@ try {
  */
 function simplifyUrlForQRCode(url) {
   try {
-    // Remover qualquer informação de caminho de usuário ou sistema
+    // URLs locais não são mais suportadas - apenas URLs HTTP/HTTPS
     if (url.includes('C:\\') || url.includes('Users\\') || url.includes('Downloads')) {
-      console.warn(`[AVISO] URL contém caminho de sistema, removendo: ${url}`);
-      // Se for caminho de arquivo local, não processar
-      return url;
+      console.warn(`[AVISO] URL contém caminho de sistema local, não suportado: ${url}`);
+      return url; // Retornar como está, mas não processar
     }
     
     // Parsear URL uma vez
@@ -359,13 +508,274 @@ function simplifyUrlForQRCode(url) {
 }
 
 /**
+ * Aplica dilatação morfológica para engrossar linhas finas
+ * Isso garante que linhas de 1 pixel não desapareçam na impressão
+ * @param {Buffer} imageData - Dados da imagem binária (0 ou 255)
+ * @param {number} width - Largura da imagem
+ * @param {number} height - Altura da imagem
+ * @param {number} radius - Raio de dilatação (padrão: 1 pixel)
+ * @returns {Buffer} - Dados com dilatação aplicada
+ */
+function applyMorphologicalDilation(imageData, width, height, radius = 1) {
+  const output = Buffer.from(imageData);
+  const temp = Buffer.from(imageData);
+  
+  // Para cada pixel preto (0), verificar vizinhança e dilatar
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      
+      // Se o pixel é preto (0), dilatar na vizinhança
+      if (temp[idx] === 0) {
+        // Verificar vizinhança (raio x raio)
+        for (let dy = -radius; dy <= radius; dy++) {
+          for (let dx = -radius; dx <= radius; dx++) {
+            const nx = x + dx;
+            const ny = y + dy;
+            
+            // Verificar se está dentro dos limites
+            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+              const nIdx = ny * width + nx;
+              // Se estiver dentro do raio (distância euclidiana <= radius)
+              const distance = Math.sqrt(dx * dx + dy * dy);
+              if (distance <= radius) {
+                output[nIdx] = 0; // Tornar pixel preto
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  return output;
+}
+
+/**
+ * Aplica dithering Floyd-Steinberg para melhor qualidade em imagens 1-bit
+ * O dithering distribui o erro de quantização para pixels adjacentes,
+ * criando a ilusão de tons de cinza mesmo em imagens binárias
+ * @param {Buffer} imageData - Dados da imagem em escala de cinza (0-255)
+ * @param {number} width - Largura da imagem
+ * @param {number} height - Altura da imagem
+ * @returns {Buffer} - Dados binarizados com dithering aplicado (0 ou 255)
+ */
+function applyFloydSteinbergDithering(imageData, width, height) {
+  const output = Buffer.from(imageData);
+  
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const oldPixel = output[idx];
+      const newPixel = oldPixel < 128 ? 0 : 255;
+      const error = oldPixel - newPixel;
+      
+      output[idx] = newPixel;
+      
+      // Distribuir erro para pixels adjacentes (Floyd-Steinberg)
+      // Padrão:     X  7/16
+      //          3/16 5/16 1/16
+      if (x + 1 < width) {
+        output[idx + 1] = Math.max(0, Math.min(255, output[idx + 1] + error * 7 / 16));
+      }
+      if (x - 1 >= 0 && y + 1 < height) {
+        output[(y + 1) * width + (x - 1)] = Math.max(0, Math.min(255, output[(y + 1) * width + (x - 1)] + error * 3 / 16));
+      }
+      if (y + 1 < height) {
+        output[(y + 1) * width + x] = Math.max(0, Math.min(255, output[(y + 1) * width + x] + error * 5 / 16));
+      }
+      if (x + 1 < width && y + 1 < height) {
+        output[(y + 1) * width + (x + 1)] = Math.max(0, Math.min(255, output[(y + 1) * width + (x + 1)] + error * 1 / 16));
+      }
+    }
+  }
+  
+  return output;
+}
+
+/**
  * Converte imagem do QR code (URL ou caminho local) para formato ZPL ^GF
  * @param {string} imageUrl - URL ou caminho local da imagem
- * @param {number} width - Largura desejada em dots (padrão: 80 = 1.0cm em 203 DPI)
- * @param {number} height - Altura desejada em dots (padrão: 80 = 1.0cm em 203 DPI)
+ * @param {number} width - Largura desejada em dots (padrão: 160 = ~2cm em 203 DPI)
+ * @param {number} height - Altura desejada em dots (padrão: 160 = ~2cm em 203 DPI)
  * @returns {Promise<string>} - Comando ZPL ^GF com dados da imagem
  */
-async function convertImageToZPL(imageUrl, width = 80, height = 80) {
+/**
+ * Processa e calcula posição da imagem do produto baseado no layout
+ * Retorna: { imageX, imageY, imageWidth, imageHeight, imageZPL }
+ */
+async function processProductImage(imageUrl, layout, context = '') {
+  const contextLabel = context ? `[${context}] ` : '';
+  
+  // Valores padrão
+  let imageX = 50;
+  let imageY = 70;
+  let imageWidth = 160;
+  let imageHeight = 160;
+  let imageZPL = null;
+  
+  if (!imageUrl || imageUrl.trim() === '') {
+    console.log(`[IMAGE] ${contextLabel}⚠️ IMAGE_URL não disponível`);
+    return { imageX, imageY, imageWidth, imageHeight, imageZPL: null };
+  }
+  
+  // Validar que a imagem vem da API Python
+  const isFromPythonAPI = imageUrl.includes('/image/reference/') || imageUrl.includes('127.0.0.1') || imageUrl.includes('localhost');
+  if (!isFromPythonAPI) {
+    console.warn(`[IMAGE] ${contextLabel}⚠️ Aviso: URL da imagem não parece ser da API Python: ${imageUrl}`);
+  } else {
+    console.log(`[IMAGE] ${contextLabel}✅ Confirmado: Imagem vem da API Python: ${imageUrl}`);
+  }
+  
+  // Processar layout da imagem
+  const imageLayout = layout?.image || layout?.productImage;
+  
+  if (imageLayout) {
+    console.log(`[IMAGE] ${contextLabel}[LAYOUT] Coordenadas do editor detectadas: x=${imageLayout.x}, y=${imageLayout.y}, width=${imageLayout.width}, height=${imageLayout.height}`);
+    
+    // Comparar com QR code esquerdo para debug
+    if (layout?.qrLeft) {
+      console.log(`[IMAGE] ${contextLabel}[LAYOUT] QR code esquerdo está em: (${layout.qrLeft.x}, ${layout.qrLeft.y})`);
+      console.log(`[IMAGE] ${contextLabel}[LAYOUT] Comparação: Imagem Y=${imageLayout.y} vs QR Y=${layout.qrLeft.y} (imagem deve estar ACIMA se Y menor)`);
+    }
+    
+    // Detectar se está em dots ou cm
+    const absX = Math.abs(imageLayout.x || 0);
+    const absY = Math.abs(imageLayout.y || 0);
+    const absWidth = Math.abs(imageLayout.width || 0);
+    const absHeight = Math.abs(imageLayout.height || 0);
+    
+    const hasSmallValues = absWidth < 20 && absHeight < 20 && absX < 20 && absY < 20;
+    const hasNegativeValues = (imageLayout.x && imageLayout.x < 0) || (imageLayout.y && imageLayout.y < 0);
+    const hasLargeValues = absWidth > 50 || absHeight > 50 || absX > 50 || absY > 50;
+    
+    const isInDots = hasLargeValues || hasNegativeValues || !hasSmallValues;
+    const aspectRatio = absWidth && absHeight ? absWidth / absHeight : 1;
+    const isDistorted = aspectRatio > 10 || aspectRatio < 0.1;
+    
+    if (isInDots) {
+      // Já está em dots
+      imageX = imageLayout.x || 50;
+      imageY = imageLayout.y || 70;
+      imageWidth = absWidth || 160;
+      imageHeight = absHeight || 160;
+      
+      console.log(`[IMAGE] ${contextLabel}[LAYOUT] Coordenadas em DOTS detectadas - usando valores do editor diretamente`);
+      console.log(`[IMAGE] ${contextLabel}[LAYOUT] Posição original do editor: (${imageX}, ${imageY})`);
+      console.log(`[IMAGE] ${contextLabel}[LAYOUT] Tamanho original do editor: ${imageWidth}x${imageHeight} dots`);
+      
+      if (imageX < 0) {
+        console.warn(`[IMAGE] ${contextLabel}[LAYOUT] Posição X negativa detectada (${imageX}). Ajustando para 50.`);
+        imageX = 50;
+      }
+      if (imageY < 0) {
+        console.warn(`[IMAGE] ${contextLabel}[LAYOUT] Posição Y negativa detectada (${imageY}). Ajustando para 70.`);
+        imageY = 70;
+      }
+      
+      console.log(`[IMAGE] ${contextLabel}Layout productImage detectado (em dots): posição (${imageX}, ${imageY}), tamanho ${imageWidth}x${imageHeight} dots`);
+    } else if (isDistorted) {
+      // Layout distorcido - usar tamanho padrão
+      console.warn(`[IMAGE] ${contextLabel}⚠️ Layout com proporção muito distorcida detectada (${imageLayout.width}x${imageLayout.height}, ratio=${aspectRatio.toFixed(2)}). Usando tamanho padrão 160x160 dots.`);
+      imageWidth = 160;
+      imageHeight = 160;
+      imageX = imageLayout.x ? (hasSmallValues ? Math.round(imageLayout.x * 80) : imageLayout.x) : 50;
+      imageY = imageLayout.y ? (hasSmallValues ? Math.round(imageLayout.y * 80) : imageLayout.y) : 70;
+      if (imageX < 0) imageX = 50;
+      if (imageY < 0) imageY = 70;
+    } else {
+      // Converter de cm para dots
+      imageWidth = Math.round((absWidth || 2) * 80);
+      imageHeight = Math.round((absHeight || 2) * 80);
+      imageX = Math.round((imageLayout.x || 0) * 80);
+      imageY = Math.round((imageLayout.y || 0) * 80);
+      console.log(`[IMAGE] ${contextLabel}[LAYOUT] Coordenadas em CM detectadas - convertendo para DOTS`);
+      console.log(`[IMAGE] ${contextLabel}[LAYOUT] Posição original (cm): (${imageLayout.x}, ${imageLayout.y}) -> (${imageX}, ${imageY}) dots`);
+      console.log(`[IMAGE] ${contextLabel}[LAYOUT] Tamanho original (cm): ${imageLayout.width}x${imageLayout.height} -> ${imageWidth}x${imageHeight} dots`);
+    }
+    
+    // Posicionar imagem sempre 1.5cm acima do QR code esquerdo
+    if (layout?.qrLeft) {
+      const qrY = layout.qrLeft.y;
+      const distanceInCm = 1.5; // Distância em cm entre imagem e QR code
+      const distanceInDots = Math.round(distanceInCm * 80); // 1.5 cm = 120 dots em 203 DPI
+      
+      const calculatedImageY = Math.round(qrY - distanceInDots - imageHeight);
+      
+      console.log(`[IMAGE] ${contextLabel}[LAYOUT] QR code esquerdo está em: Y=${qrY} dots`);
+      console.log(`[IMAGE] ${contextLabel}[LAYOUT] Posicionando imagem ${distanceInCm}cm (${distanceInDots} dots) acima do QR code`);
+      console.log(`[IMAGE] ${contextLabel}[LAYOUT] Cálculo: QR Y(${qrY}) - ${distanceInCm}cm(${distanceInDots}) - altura(${imageHeight}) = ${calculatedImageY} dots`);
+      
+      if (calculatedImageY >= 0) {
+        const oldImageY = imageY;
+        imageY = calculatedImageY;
+        console.log(`[IMAGE] ${contextLabel}[LAYOUT] ✅ Posição Y ajustada de ${oldImageY} para ${imageY} (${distanceInCm}cm acima do QR code)`);
+        console.log(`[IMAGE] ${contextLabel}[LAYOUT] ✅ Imagem vai de Y=${imageY} até Y=${imageY + imageHeight} (${distanceInCm}cm acima do QR code em Y=${qrY})`);
+      } else {
+        console.warn(`[IMAGE] ${contextLabel}[LAYOUT] ⚠️ Posição calculada (${calculatedImageY}) seria negativa. Mantendo posição original do layout: Y=${imageY}`);
+      }
+    }
+    
+    // Validação: garantir tamanho mínimo e máximo
+    if (imageWidth < 80 || imageHeight < 80) {
+      console.warn(`[IMAGE] ${contextLabel}⚠️ Tamanho muito pequeno detectado: ${imageWidth}x${imageHeight} dots. Aplicando tamanho mínimo de 80x80 dots.`);
+      imageWidth = Math.max(80, imageWidth);
+      imageHeight = Math.max(80, imageHeight);
+    }
+    
+    if (imageWidth > 400 || imageHeight > 400) {
+      console.warn(`[IMAGE] ${contextLabel}⚠️ Tamanho muito grande detectado: ${imageWidth}x${imageHeight} dots. Limitando para 400x400 dots máximo.`);
+      const maxDim = Math.max(imageWidth, imageHeight);
+      const scale = 400 / maxDim;
+      imageWidth = Math.round(imageWidth * scale);
+      imageHeight = Math.round(imageHeight * scale);
+    }
+    
+    // Validação final: garantir que posição está dentro dos limites
+    const originalX = imageX;
+    const originalY = imageY;
+    imageX = Math.round(imageX);
+    imageY = Math.round(imageY);
+    if (imageX < 0) imageX = 50;
+    if (imageY < 0) imageY = 70;
+    if (imageX + imageWidth > 831) {
+      console.warn(`[IMAGE] ${contextLabel}⚠️ Imagem ultrapassa largura da etiqueta (${imageX + imageWidth} > 831). Ajustando posição X de ${originalX} para ${Math.max(0, 831 - imageWidth)}.`);
+      imageX = Math.max(0, 831 - imageWidth);
+    }
+    if (imageY + imageHeight > 500) {
+      console.warn(`[IMAGE] ${contextLabel}⚠️ Imagem ultrapassa altura da etiqueta (${imageY + imageHeight} > 500). Ajustando posição Y de ${originalY} para ${Math.max(0, 500 - imageHeight)}.`);
+      imageY = Math.max(0, 500 - imageHeight);
+    }
+    
+    // Garantir que coordenadas finais são inteiras
+    imageX = Math.round(imageX);
+    imageY = Math.round(imageY);
+    imageWidth = Math.round(imageWidth);
+    imageHeight = Math.round(imageHeight);
+    
+    console.log(`[IMAGE] ${contextLabel}Posição final: (${imageX}, ${imageY}), Tamanho: ${imageWidth}x${imageHeight} dots`);
+  } else {
+    console.warn(`[IMAGE] ${contextLabel}⚠️ Layout productImage não encontrado - usando valores padrão: (${imageX}, ${imageY}), tamanho ${imageWidth}x${imageHeight} dots`);
+  }
+  
+  // Converter imagem para ZPL
+  try {
+    console.log(`[IMAGE] ${contextLabel}✅ Processando imagem do sapato para posição separada: ${imageUrl}`);
+    imageZPL = await convertImageToZPL(imageUrl, imageWidth, imageHeight);
+    
+    if (imageZPL && imageZPL.trim() !== '') {
+      console.log(`[IMAGE] ${contextLabel}✅ Imagem do sapato convertida para ZPL com sucesso!`);
+      console.log(`[IMAGE] ${contextLabel}   [SIZE] Tamanho aplicado: ${imageWidth}x${imageHeight} dots`);
+    }
+  } catch (error) {
+    console.error(`[IMAGE] ${contextLabel}❌ Erro ao converter imagem para ZPL: ${error.message}`);
+    imageZPL = null;
+  }
+  
+  return { imageX, imageY, imageWidth, imageHeight, imageZPL };
+}
+
+async function convertImageToZPL(imageUrl, width = 160, height = 160) {
   try {
     // DEBUG CRÍTICO: Log dos parâmetros recebidos
     console.log(`\n[CONFIG] ========== convertImageToZPL CHAMADO ==========`);
@@ -385,10 +795,16 @@ async function convertImageToZPL(imageUrl, width = 80, height = 80) {
       );
       const isKnownImageService = imageUrl.includes('imgur.com') || imageUrl.includes('drive.google.com') || 
                                   imageUrl.includes('i.imgur.com') || imageUrl.includes('cdn.') ||
-                                  imageUrl.includes('/images/') || imageUrl.includes('/image/');
+                                  imageUrl.includes('/images/') || imageUrl.includes('/image/') ||
+                                  imageUrl.includes('/image/reference/') || imageUrl.includes('127.0.0.1') ||
+                                  imageUrl.includes('localhost');
       
-      // Se não parece ser uma imagem, gerar QR code diretamente
-      if (!hasImageExtension && !isKnownImageService) {
+      // NUNCA gerar QR code se a URL for da API Python - sempre tratar como imagem
+      const isPythonAPI = imageUrl.includes('/image/reference/') || imageUrl.includes('127.0.0.1') || imageUrl.includes('localhost');
+      if (isPythonAPI) {
+        console.log(`[IMAGE] ✅ URL da API Python detectada - sempre tratar como imagem (nunca gerar QR code)`);
+        // Forçar que seja tratada como imagem conhecida, pular geração de QR code
+      } else if (!hasImageExtension && !isKnownImageService) {
         // Simplificar URL para QR code mais legível
         const simplifiedUrl = simplifyUrlForQRCode(imageUrl);
         console.log(`[QRCODE] URL parece ser de página web (não de imagem). Gerando QR code a partir da URL: ${imageUrl}`);
@@ -535,6 +951,14 @@ async function convertImageToZPL(imageUrl, width = 80, height = 80) {
         );
         
         if (!isImage) {
+          // NUNCA gerar QR code se a URL for da API Python
+          const isPythonAPI = imageUrl.includes('/image/reference/') || imageUrl.includes('127.0.0.1') || imageUrl.includes('localhost');
+          if (isPythonAPI) {
+            console.error(`[ERRO] API Python retornou dados que não são uma imagem válida!`);
+            console.error(`[ERRO] Verifique se a API Python está funcionando corretamente e retornando imagens.`);
+            throw new Error(`API Python retornou dados inválidos (não é uma imagem). URL: ${imageUrl}`);
+          }
+          
           // Pode ser HTML retornado (página web ou erro)
           const contentStr = imageBuffer.toString('utf8', 0, Math.min(200, imageBuffer.length));
           if (contentStr.includes('<html') || contentStr.includes('<!DOCTYPE')) {
@@ -621,6 +1045,14 @@ async function convertImageToZPL(imageUrl, width = 80, height = 80) {
             );
             
             if (!isImage) {
+              // NUNCA gerar QR code se a URL for da API Python
+              const isPythonAPI = imageUrl.includes('/image/reference/') || imageUrl.includes('127.0.0.1') || imageUrl.includes('localhost');
+              if (isPythonAPI) {
+                console.error(`[ERRO] API Python retornou dados que não são uma imagem válida!`);
+                console.error(`[ERRO] Verifique se a API Python está funcionando corretamente e retornando imagens.`);
+                throw new Error(`API Python retornou dados inválidos (não é uma imagem). URL: ${imageUrl}`);
+              }
+              
               const contentStr = imageBuffer.toString('utf8', 0, Math.min(200, imageBuffer.length));
               if (contentStr.includes('<html') || contentStr.includes('<!DOCTYPE')) {
                 // Se receber HTML, assumir que é uma URL de página e gerar QR code
@@ -653,6 +1085,14 @@ async function convertImageToZPL(imageUrl, width = 80, height = 80) {
               }
             }
           } catch (altError) {
+            // NUNCA gerar QR code se a URL for da API Python
+            const isPythonAPI = imageUrl.includes('/image/reference/') || imageUrl.includes('127.0.0.1') || imageUrl.includes('localhost');
+            if (isPythonAPI) {
+              console.error(`[ERRO] Erro ao baixar imagem da API Python: ${altError.message}`);
+              console.error(`[ERRO] Verifique se a API Python está funcionando corretamente.`);
+              throw new Error(`Erro ao baixar imagem da API Python: ${altError.message}. URL: ${imageUrl}`);
+            }
+            
             // Se falhar completamente, tentar gerar QR code a partir da URL simplificada
             const simplifiedUrl = simplifyUrlForQRCode(imageUrl);
             console.log(`[QRCODE] Erro ao baixar imagem. Gerando QR code a partir da URL: ${imageUrl}`);
@@ -680,6 +1120,14 @@ async function convertImageToZPL(imageUrl, width = 80, height = 80) {
             }
           }
         } else {
+          // NUNCA gerar QR code se a URL for da API Python
+          const isPythonAPI = imageUrl.includes('/image/reference/') || imageUrl.includes('127.0.0.1') || imageUrl.includes('localhost');
+          if (isPythonAPI) {
+            console.error(`[ERRO] Erro ao baixar imagem da API Python: ${downloadError.message}`);
+            console.error(`[ERRO] Verifique se a API Python está funcionando corretamente.`);
+            throw new Error(`Erro ao baixar imagem da API Python: ${downloadError.message}. URL: ${imageUrl}`);
+          }
+          
           // Se falhar o download inicial e não for Google Drive, tentar gerar QR code
           const simplifiedUrl = simplifyUrlForQRCode(imageUrl);
           console.log(`[QRCODE] Erro ao baixar imagem. Gerando QR code a partir da URL: ${imageUrl}`);
@@ -705,69 +1153,164 @@ async function convertImageToZPL(imageUrl, width = 80, height = 80) {
       }
       } // Fim do else do download (se imageBuffer não foi gerado antes)
     } else {
-      // Ler imagem de caminho local
-      console.log(`[FILE] Lendo imagem de caminho local: ${imageUrl}`);
-      if (!fs.existsSync(imageUrl)) {
-        throw new Error(`Arquivo não encontrado: ${imageUrl}`);
+      // Verificar se é caminho local válido (permitir apenas dentro do projeto)
+      if (imageUrl.includes('C:\\') || imageUrl.includes('Users\\') || imageUrl.includes('Downloads')) {
+        console.error(`[ERRO] Caminho local do sistema detectado: ${imageUrl}`);
+        console.error(`[ERRO] IMAGE_URL deve ser uma URL HTTP/HTTPS, não um caminho local de arquivo.`);
+        throw new Error(`IMAGE_URL deve ser uma URL HTTP/HTTPS (ex: https://exemplo.com/imagem.png), não um caminho local (ex: C:\\Users\\...). Caminho recebido: ${imageUrl}`);
       }
-      imageBuffer = fs.readFileSync(imageUrl);
+      
+      // Ler imagem de caminho local (apenas se for caminho relativo ao projeto)
+      console.log(`[FILE] Lendo imagem de caminho local: ${imageUrl}`);
+      
+      // Resolver caminho relativo ao diretório do projeto
+      const projectPath = path.resolve(__dirname, imageUrl);
+      
+      // Verificar se o caminho está dentro do diretório do projeto (segurança)
+      const projectDir = path.resolve(__dirname);
+      if (!projectPath.startsWith(projectDir)) {
+        throw new Error(`Caminho de imagem está fora do diretório do projeto. Use URLs HTTP/HTTPS ou caminhos relativos ao projeto.`);
+      }
+      
+      if (!fs.existsSync(projectPath)) {
+        throw new Error(`Arquivo não encontrado: ${projectPath}`);
+      }
+      imageBuffer = fs.readFileSync(projectPath);
     }
     
     // Converter para bitmap 1-bit (monocromático) e redimensionar usando sharp
-    // FORÇAR tamanho exato: 1.0 cm x 1.0 cm = 80 x 80 dots (203 DPI)
-    // IMPORTANTE: O bitmap será renderizado pixel por pixel na impressora
-    // 80 pixels = 80 dots = 1.0 cm (em 203 DPI)
-    let processedImage = sharp(imageBuffer);
+    // MELHORIAS DE QUALIDADE PARA IMPRESSÃO:
+    // 1. Processar em resolução 2x maior e depois reduzir (melhor qualidade)
+    // 2. Usar sharpening antes da binarização
+    // 3. Melhorar contraste com normalise() e ajustes manuais
+    // 4. Usar threshold adaptativo para melhor preservação de detalhes
+    // 5. Usar kernel lanczos3 para melhor qualidade no redimensionamento
     
-    // Primeiro, garantir que a imagem seja quadrada e redimensionada EXATAMENTE para width x height
-    // Usar 'fill' para forçar tamanho exato, sem preservar aspect ratio
-    processedImage = processedImage
+    // Primeiro, obter dimensões originais
+    const originalMetadata = await sharp(imageBuffer).metadata();
+    console.log(`   [QUALITY] Dimensões originais: ${originalMetadata.width}x${originalMetadata.height}`);
+    console.log(`   [QUALITY] Processando com melhorias de qualidade para impressão`);
+    
+    // PROCESSAMENTO COM MELHORIAS DE QUALIDADE (CONSERVADOR)
+    // Foco em garantir que a imagem apareça com boa qualidade
+    
+    // 1. Redimensionar diretamente para o tamanho final com kernel de alta qualidade
+    const resizedBuffer = await sharp(imageBuffer)
       .resize(width, height, { 
-        fit: 'fill', // CRÍTICO: Forçar tamanho exato (não preservar aspect ratio)
-        background: { r: 255, g: 255, b: 255 }, // Fundo branco
-        kernel: 'lanczos3', // Melhor qualidade no redimensionamento
-        withoutEnlargement: false, // Permitir aumentar se necessário
-        fastShrinkOnLoad: false // Garantir redimensionamento preciso
+        fit: 'contain',
+        background: { r: 255, g: 255, b: 255 },
+        kernel: 'lanczos3', // Kernel de alta qualidade para melhor preservação de detalhes
+        withoutEnlargement: false
       })
       .greyscale()
-      .threshold(128); // Binarizar (preto e branco)
-    
-    // Converter para raw data
-    const { data, info } = await processedImage
+      .normalise() // Melhorar contraste automático
+      .sharpen({ sigma: 0.5, flat: 1, jagged: 1.5 }) // Sharpening suave para melhor definição
+      .linear(1.15, -(128 * 0.15)) // Aumentar brilho e contraste suavemente (1.15x multiplicador, -19.2 offset)
       .raw()
       .toBuffer({ resolveWithObject: true });
     
-    // DEBUG: Verificar dimensões após processamento
-    console.log(`   [DEBUG] Dimensões após Sharp resize: ${info.width}x${info.height}`);
-    console.log(`   [OK] Dimensões esperadas: ${width}x${height}`);
+    console.log(`   [QUALITY] Redimensionado para tamanho final: ${resizedBuffer.info.width}x${resizedBuffer.info.height}`);
     
-    // Garantir que as dimensões sejam exatamente as especificadas
-    if (info.width !== width || info.height !== height) {
-      console.error(`[ERRO] ERRO CRÍTICO: Sharp não redimensionou corretamente!`);
-      console.error(`   Obtido: ${info.width}x${info.height}`);
-      console.error(`   Esperado: ${width}x${height}`);
-      throw new Error(`Falha ao redimensionar imagem para ${width}x${height} dots`);
+    // 2. Aplicar threshold adaptativo melhorado (mais conservador)
+    const resizedData = resizedBuffer.data;
+    const finalData = Buffer.from(resizedData);
+    
+    // Calcular threshold adaptativo baseado na média dos pixels
+    let sum = 0;
+    for (let i = 0; i < finalData.length; i++) {
+      sum += finalData[i];
+    }
+    const mean = sum / finalData.length;
+    // Threshold adaptativo: usar média ajustada (mais conservador para garantir que a imagem apareça)
+    // Se a imagem for muito clara (média alta), usar threshold mais baixo para preservar detalhes
+    // Se a imagem for muito escura (média baixa), usar threshold mais alto para não perder tudo
+    let adaptiveThreshold;
+    if (mean > 200) {
+      // Imagem muito clara - usar threshold mais baixo
+      adaptiveThreshold = Math.max(120, mean * 0.6);
+    } else if (mean < 80) {
+      // Imagem muito escura - usar threshold mais alto
+      adaptiveThreshold = Math.min(140, mean * 1.2);
+    } else {
+      // Imagem normal - usar média ajustada
+      adaptiveThreshold = Math.max(110, Math.min(150, mean * 0.9));
     }
     
-    console.log(`   [OK] Dimensões corretas confirmadas!`);
+    let blackPixels = 0;
+    let whitePixels = 0;
+    for (let i = 0; i < finalData.length; i++) {
+      if (finalData[i] < adaptiveThreshold) {
+        finalData[i] = 0; // Preto
+        blackPixels++;
+      } else {
+        finalData[i] = 255; // Branco
+        whitePixels++;
+      }
+    }
+    console.log(`   [QUALITY] Threshold adaptativo aplicado: ${adaptiveThreshold.toFixed(1)} (média=${mean.toFixed(1)})`);
+    console.log(`   [QUALITY] Pixels após threshold: ${blackPixels} pretos, ${whitePixels} brancos`);
+    
+    // Validação: garantir que temos pixels pretos (se não tiver, a imagem não aparecerá)
+    if (blackPixels === 0) {
+      console.warn(`   [QUALITY] ⚠️ AVISO: Nenhum pixel preto detectado! Aplicando threshold mais baixo...`);
+      // Tentar com threshold mais baixo
+      const lowerThreshold = Math.max(80, adaptiveThreshold * 0.7);
+      blackPixels = 0;
+      whitePixels = 0;
+      for (let i = 0; i < finalData.length; i++) {
+        if (finalData[i] < lowerThreshold) {
+          finalData[i] = 0; // Preto
+          blackPixels++;
+        } else {
+          finalData[i] = 255; // Branco
+          whitePixels++;
+        }
+      }
+      console.log(`   [QUALITY] Threshold ajustado para: ${lowerThreshold.toFixed(1)}`);
+      console.log(`   [QUALITY] Pixels após ajuste: ${blackPixels} pretos, ${whitePixels} brancos`);
+    }
+    
+    const info = resizedBuffer.info;
+    
+    console.log(`   [QUALITY] Processamento aplicado: resize + greyscale + normalise + sharpen + contrast + threshold adaptativo`);
+    
+    // DEBUG: Verificar dimensões após processamento
+    console.log(`   [DEBUG] Dimensões finais: ${info.width}x${info.height}`);
+    console.log(`   [OK] Dimensões esperadas (máximo): ${width}x${height}`);
+    
+    // Com fit: 'contain', a imagem pode ser menor que width x height para preservar aspect ratio
+    // Isso é esperado e desejado para melhor qualidade (sem distorção)
+    if (info.width > width || info.height > height) {
+      console.error(`[ERRO] ERRO CRÍTICO: Sharp redimensionou para tamanho maior que o esperado!`);
+      console.error(`   Obtido: ${info.width}x${info.height}`);
+      console.error(`   Esperado (máximo): ${width}x${height}`);
+      throw new Error(`Falha ao redimensionar imagem: obtido ${info.width}x${info.height} (maior que ${width}x${height})`);
+    }
+    
+    console.log(`   [OK] Dimensões corretas confirmadas! (${info.width}x${info.height} dentro de ${width}x${height})`);
+    console.log(`   [QUALITY] Aspect ratio preservado para melhor qualidade visual`);
     
     // Converter para formato hexadecimal do ZPL ^GF
     // ^GF formato: ^GFa,b,c,d,data^FS
     // a = compression type (A=ASCII hex)
     // b = binary byte count
-    // c = graphic field count (total bytes)
+    // c = graphic field count (total bytes) 
     // d = bytes per row
+    // IMPORTANTE: Usar dimensões reais da imagem (pode ser menor que width x height com fit: 'contain')
     const actualWidth = info.width;
     const actualHeight = info.height;
     const bytesPerRow = Math.ceil(actualWidth / 8);
     const totalBytes = bytesPerRow * actualHeight;
+    
+    console.log(`   [QUALITY] Dimensões reais da imagem: ${actualWidth}x${actualHeight} dots`);
+    console.log(`   [QUALITY] Bytes por linha: ${bytesPerRow}, Total de bytes: ${totalBytes}`);
     
     // Converter pixels para bits (1 = preto, 0 = branco)
     // CRÍTICO: Cada pixel do bitmap = 1 dot na impressora
     // 80 pixels = 80 dots = 1.0 cm (em 203 DPI)
     let bitmapHex = '';
     let totalPixels = 0;
-    let blackPixels = 0;
+    let finalBlackPixels = 0;
     
     for (let row = 0; row < actualHeight; row++) {
       for (let colByte = 0; colByte < bytesPerRow; colByte++) {
@@ -777,13 +1320,14 @@ async function convertImageToZPL(imageUrl, width = 80, height = 80) {
           if (pixelX < actualWidth) {
             // Dados raw greyscale tem 1 canal por pixel após processamento
             const pixelIndex = row * actualWidth + pixelX;
-            if (pixelIndex < data.length) {
+            if (pixelIndex < finalData.length) {
               totalPixels++;
-              const pixelValue = data[pixelIndex];
-              // Se pixel é escuro (menor que 128 devido ao threshold), bit = 1
+              const pixelValue = finalData[pixelIndex];
+              // Após o threshold adaptativo, pixels já estão binarizados (0 = preto, 255 = branco)
+              // Usar threshold de 128 para garantir que apenas pixels pretos (0) sejam capturados
               if (pixelValue < 128) {
                 byte |= (1 << (7 - bit));
-                blackPixels++;
+                finalBlackPixels++;
               }
             }
           }
@@ -809,20 +1353,23 @@ async function convertImageToZPL(imageUrl, width = 80, height = 80) {
     // IMPORTANTE: O bitmap é renderizado pixel por pixel, então 80x80 pixels = 80x80 dots = 1.0 cm
     const zplCommand = `^GFA,${totalBytes},${totalBytes},${bytesPerRow},${bitmapHex}^FS`;
     
-    // Verificar se as dimensões estão corretas
-    const expectedCm = (width / 203 * 2.54).toFixed(2);
+    // Verificar dimensões finais
+    const maxCm = (width / 203 * 2.54).toFixed(2);
     const actualCm = (actualWidth / 203 * 2.54).toFixed(2);
     const actualCmHeight = (actualHeight / 203 * 2.54).toFixed(2);
     
-    if (actualWidth !== width || actualHeight !== height) {
-      console.error(`[ERRO] ERRO: Dimensões não correspondem: esperado ${width}x${height} dots (${expectedCm}cm), obtido ${actualWidth}x${actualHeight} dots (${actualCm}cm x ${actualCmHeight}cm)`);
-      throw new Error(`Falha ao redimensionar: obtido ${actualWidth}x${actualHeight} ao invés de ${width}x${height}`);
+    // Com fit: 'contain', é normal que as dimensões sejam menores que width x height
+    if (actualWidth > width || actualHeight > height) {
+      console.error(`[ERRO] ERRO: Dimensões maiores que o esperado: máximo ${width}x${height} dots (${maxCm}cm), obtido ${actualWidth}x${actualHeight} dots (${actualCm}cm x ${actualCmHeight}cm)`);
+      throw new Error(`Falha ao redimensionar: obtido ${actualWidth}x${actualHeight} (maior que ${width}x${height})`);
     } else {
       console.log(`[OK] Imagem convertida para ZPL: ${actualWidth}x${actualHeight} dots = ${actualCm}cm x ${actualCmHeight}cm`);
-      console.log(`   [SIZE] TAMANHO FIXO: 1.0 cm x 1.0 cm (80 dots = 1.0 cm em 203 DPI)`);
+      console.log(`   [SIZE] Tamanho máximo disponível: ${width}x${height} dots (~${maxCm}cm)`);
+      console.log(`   [SIZE] Tamanho real (preservando aspect ratio): ${actualWidth}x${actualHeight} dots (${actualCm}cm x ${actualCmHeight}cm)`);
+      console.log(`   [QUALITY] Aspect ratio preservado para melhor qualidade visual (sem distorção)`);
       console.log(`   [SIZE] Bytes por linha: ${bytesPerRow}, Total de bytes: ${totalBytes}`);
       console.log(`   [DEBUG] Hex data length: ${bitmapHex.length} chars (esperado: ${totalBytes * 2})`);
-      console.log(`   🎨 Pixels processados: ${totalPixels} (${blackPixels} pretos, ${totalPixels - blackPixels} brancos)`);
+      console.log(`   🎨 Pixels processados: ${totalPixels} (${finalBlackPixels} pretos, ${totalPixels - finalBlackPixels} brancos)`);
       console.log(`   [AVISO] IMPORTANTE: Este bitmap será renderizado EXATAMENTE como ${actualWidth}x${actualHeight} dots na impressora`);
       console.log(`   [AVISO] Se aparecer maior no preview, pode ser problema de escala do Labelary, mas a impressão física será correta`);
       console.log(`   [INFO] Comando ZPL gerado (amostra): ${zplCommand.substring(0, 150)}...`);
@@ -836,12 +1383,7 @@ async function convertImageToZPL(imageUrl, width = 80, height = 80) {
   }
 }
 
-// Middleware
-app.use(cors());
-const maxUploadSize = process.env.MAX_UPLOAD_SIZE || '50mb';
-app.use(express.json({ limit: maxUploadSize }));
-app.use(express.urlencoded({ limit: maxUploadSize, extended: true }));
-app.use(express.static('public'));
+// Middleware já configurado acima (CORS e parsing JSON)
 
 // Rotas
 app.get('/', (req, res) => {
@@ -857,77 +1399,37 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Configurar caminho base para busca de QR codes
-app.post('/api/qr-codes/set-path', (req, res) => {
+// Endpoint de teste para verificar conexão com banco
+app.get('/api/test-db', async (req, res) => {
   try {
-    const { basePath } = req.body;
-    
-    if (!basePath) {
-      return res.status(400).json({ error: 'Caminho base é obrigatório' });
-    }
-
-    const success = qrCodeFinder.setBasePath(basePath);
-    
-    if (success) {
-      res.json({ 
-        success: true, 
-        message: 'Caminho base configurado com sucesso',
-        basePath: qrCodeFinder.basePath
-      });
-    } else {
-      res.status(400).json({ 
-        error: 'Caminho não encontrado ou inválido',
-        providedPath: basePath
+    if (!pool) {
+      return res.status(503).json({ 
+        error: 'Banco de dados não disponível',
+        message: 'Configure as variáveis de ambiente do PostgreSQL (DATABASE_URL ou PGHOST, PGUSER, etc.)',
+        poolAvailable: false
       });
     }
+    
+    // Testar conexão
+    const result = await pool.query('SELECT NOW() as current_time, version() as pg_version');
+    
+    res.json({
+      success: true,
+      message: 'Conexão com banco de dados OK',
+      poolAvailable: true,
+      databaseTime: result.rows[0].current_time,
+      postgresVersion: result.rows[0].pg_version.split(' ')[0] + ' ' + result.rows[0].pg_version.split(' ')[1]
+    });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({
+      error: 'Erro ao conectar com banco de dados',
+      message: error.message,
+      poolAvailable: pool !== null
+    });
   }
 });
 
-// Obter caminho base atual
-app.get('/api/qr-codes/get-path', (req, res) => {
-  res.json({ 
-    basePath: qrCodeFinder.basePath,
-    exists: fs.existsSync(qrCodeFinder.basePath)
-  });
-});
-
-// Testar busca de QR code
-app.post('/api/qr-codes/test', async (req, res) => {
-  try {
-    const { poNumber, styleName } = req.body;
-    
-    if (!poNumber || !styleName) {
-      return res.status(400).json({ error: 'PO e Style Name são obrigatórios' });
-    }
-
-    const result = qrCodeFinder.findQRCode(poNumber, styleName);
-    
-    if (result) {
-      res.json({ 
-        success: true, 
-        found: true,
-        result: {
-          poNumber: result.poNumber,
-          styleName: result.styleName,
-          fileName: result.fileName,
-          filePath: result.filePath,
-          qrCodePreview: result.qrCode.substring(0, 50) + '...' // Primeiros 50 chars
-        }
-      });
-    } else {
-      res.json({ 
-        success: false, 
-        found: false,
-        message: 'QR code não encontrado na estrutura de pastas',
-        basePath: qrCodeFinder.basePath
-      });
-    }
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+// Endpoints de QR codes em pastas locais removidos - não são mais usados
 
 // Upload e processamento do arquivo Excel
 app.post('/api/upload-excel', upload.single('excel'), async (req, res) => {
@@ -1488,6 +1990,78 @@ app.post('/api/print-individual', async (req, res) => {
     // Usar o módulo Python USB que funciona sem VOID
     const results = [];
     
+    // Carregar template oficial da Larroud (fora do loop para melhor performance)
+    const fs = require('fs');
+    const path = require('path');
+    const templatePath = path.join(__dirname, process.env.TEMPLATE_PATH || '../templates/TEMPLATE_LARROUD_OFICIAL.zpl');
+    let larroudTemplate;
+    
+    try {
+      larroudTemplate = fs.readFileSync(templatePath, 'utf8');
+    } catch (error) {
+      console.error('Erro ao carregar template:', error);
+      return res.status(500).json({ error: 'Template oficial não encontrado' });
+    }
+
+    // Carregar layout customizado (se existir) - fora do loop
+    // Usar layoutName do request se fornecido, senão usar o padrão
+    const layoutName = req.body.layoutName || 'Default';
+    console.log(`[DEBUG] [PRINT-INDIVIDUAL] Tentando carregar layout: "${layoutName}"`);
+    
+    let layout = null;
+    try {
+      // Sempre usar caminho relativo ao projeto (portável)
+      const layoutsDir = path.join(__dirname, 'layouts');
+      
+      // Garantir que o diretório existe
+      if (!fs.existsSync(layoutsDir)) {
+        fs.mkdirSync(layoutsDir, { recursive: true });
+        console.log(`[OK] Diretório layouts criado: ${layoutsDir}`);
+      }
+      
+      const layoutPath = path.join(layoutsDir, `${layoutName}.json`);
+      
+      console.log(`[DEBUG] [PRINT-INDIVIDUAL] Procurando layout em: ${layoutPath}`);
+      console.log(`[DEBUG] [PRINT-INDIVIDUAL] Layout existe? ${fs.existsSync(layoutPath)}`);
+      
+      if (fs.existsSync(layoutPath)) {
+        const layoutData = fs.readFileSync(layoutPath, 'utf8');
+        const layoutObj = JSON.parse(layoutData);
+        layout = layoutObj.layout || layoutObj;
+        console.log(`[OK] Layout "${layoutName}" carregado para impressão individual`);
+        console.log('[DEBUG] Layout keys:', Object.keys(layout));
+        // Verificar alguns valores para confirmar que está em dots
+        if (layout.labelStyleName) {
+          console.log('[DEBUG] Layout labelStyleName:', layout.labelStyleName);
+        }
+        if (layout.styleName) {
+          console.log('[DEBUG] Layout styleName:', layout.styleName);
+        }
+      } else {
+        console.warn(`[AVISO] Layout "${layoutName}" não encontrado em ${layoutPath}`);
+        // Tentar carregar Default.json se o layout solicitado não existir
+        const defaultLayoutPath = path.join(layoutsDir, 'Default.json');
+        if (fs.existsSync(defaultLayoutPath) && layoutName !== 'Default') {
+          console.log(`[DEBUG] Tentando carregar Default.json como fallback`);
+          const layoutData = fs.readFileSync(defaultLayoutPath, 'utf8');
+          const layoutObj = JSON.parse(layoutData);
+          layout = layoutObj.layout || layoutObj;
+          console.log('[OK] Layout Default carregado como fallback');
+        } else {
+          console.warn(`[AVISO] Nenhum layout encontrado. Usando template sem modificações.`);
+        }
+      }
+    } catch (layoutError) {
+      console.error(`[ERRO] Erro ao carregar layout "${layoutName}":`, layoutError.message);
+      console.error(layoutError.stack);
+    }
+    
+    // Se não encontrou layout, criar layout padrão vazio para não quebrar
+    if (!layout) {
+      console.warn(`[AVISO] Layout "${layoutName}" não foi carregado. Usando template sem modificações.`);
+      layout = {}; // Layout vazio para não quebrar o código
+    }
+    
     // Processar cada item com numeração sequencial
     let totalEtiquetasProcessadas = 0;
     for (const item of data) {
@@ -1503,6 +2077,7 @@ app.post('/api/print-individual', async (req, res) => {
           const vpn = String(item.VPN || 'N/A');
           const color = String(item.DESCRIPTION || item.COLOR || 'N/A');
           const size = String(item.SIZE || 'N/A');
+          const referencia = String(item.REF || item.referencia || '').trim();
           
           // Usar PO do CSV (já extraído no upload)
           const poNumber = item.PO || '0000';
@@ -1517,43 +2092,41 @@ app.post('/api/print-individual', async (req, res) => {
           // Exemplo: 197416145132046412345678
           const rfidContent = RFIDUtils.generateZebraDesignerFormat(baseBarcode, poNumber, seq, 24);
           
-          // LOCAL vem do CSV (já extraído no upload)
-          const localNumber = ''; // LOCAL ignorado
-        
-        // Carregar template oficial da Larroud
-        const fs = require('fs');
-        const path = require('path');
-        const templatePath = path.join(__dirname, process.env.TEMPLATE_PATH || '../templates/TEMPLATE_LARROUD_OFICIAL.zpl');
-        let larroudTemplate;
-        
-        try {
-          larroudTemplate = fs.readFileSync(templatePath, 'utf8');
-        } catch (error) {
-          console.error('Erro ao carregar template:', error);
-          throw new Error('Template oficial não encontrado');
-        }
-
           // Validar dados RFID (enviar como string direta, igual ZebraDesigner)
           RFIDUtils.validateRFIDData(rfidContent);
           
           console.log(`[RFID] RFID formato ZebraDesigner (string direta): ${rfidContent}`);
           
-          // Carregar layout customizado (se existir)
-          let layout = null;
-          try {
-            const layoutPath = path.join(__dirname, process.env.LAYOUT_PATH || 'label-layout.json');
-            if (fs.existsSync(layoutPath)) {
-              const layoutData = fs.readFileSync(layoutPath, 'utf8');
-              layout = JSON.parse(layoutData);
-              console.log('[OK] Layout customizado carregado para impressão individual');
+          // Buscar imagem da API Python usando a referência
+          // Primeiro tentar usar IMAGE_URL do item (se já estiver presente)
+          let imageUrl = item.IMAGE_URL || item['IMAGE_URL'] || item.image_url || item['image_url'] || '';
+          
+          // Se não houver IMAGE_URL mas houver referência, buscar da API Python
+          if (!imageUrl && referencia) {
+            try {
+              // Construir URL manualmente usando a referência normalizada
+              const normalizedRef = referencia.replace(/[.\-]/g, '');
+              if (normalizedRef.length === 7) {
+                // Detectar porta da API Python
+                const imageProxyPort = process.env._IMAGE_PROXY_ACTUAL_PORT || process.env.IMAGE_PROXY_PORT || '8000';
+                imageUrl = `http://127.0.0.1:${imageProxyPort}/image/reference/${normalizedRef}`;
+                console.log(`[IMAGE] ✅ URL construída para referência "${referencia}" (normalizada: ${normalizedRef}): ${imageUrl}`);
+              } else {
+                console.warn(`[IMAGE] ⚠️ Referência "${referencia}" não tem formato válido (esperado: 7 dígitos após normalização)`);
+              }
+            } catch (imageError) {
+              console.warn(`[IMAGE] ⚠️ Erro ao construir URL da imagem: ${imageError.message}`);
             }
-          } catch (layoutError) {
-            console.warn('Erro ao carregar layout customizado, usando padrão:', layoutError.message);
+          }
+          
+          if (!imageUrl) {
+            console.log(`[IMAGE] ⚠️ IMAGE_URL não disponível para referência "${referencia}"`);
           }
           
           // Aplicar layout customizado ao template se disponível
           let workingTemplate = larroudTemplate;
-          if (layout) {
+          // Verificar se layout tem propriedades (não é objeto vazio)
+          if (layout && Object.keys(layout).length > 0) {
             // Substituir coordenadas dos labels (textos fixos)
             workingTemplate = workingTemplate.replace(/FT187,147/g, `FT${layout.labelStyleName?.x || 187},${layout.labelStyleName?.y || 147}`);
             workingTemplate = workingTemplate.replace(/FT188,176/g, `FT${layout.labelVpn?.x || 188},${layout.labelVpn?.y || 176}`);
@@ -1614,140 +2187,164 @@ app.post('/api/print-individual', async (req, res) => {
               return match;
             });
             
-            workingTemplate = workingTemplate.replace(/FT\d+,\d+\^A0N,16,15/g, (match) => {
-              const coords = match.match(/FT(\d+),(\d+)/);
-              const x = parseInt(coords[1]);
-              const y = parseInt(coords[2]);
-              
-              if (x === layout.poInfo?.x && y === layout.poInfo?.y) {
-                return `FT${x},${y}^A0N,${layout.poInfo.fontSize || 16},${layout.poInfo.fontSize || 16}`;
-              } else if (x === layout.localInfo?.x && y === layout.localInfo?.y) {
-                return `FT${x},${y}^A0N,${layout.localInfo.fontSize || 16},${layout.localInfo.fontSize || 16}`;
-              }
-              return match;
-            });
+            // Substituir fontSize da PO e LOCAL de forma mais robusta
+            // Procurar por qualquer tamanho de fonte na posição da PO/LOCAL
+            if (layout.poInfo) {
+              const poX = layout.poInfo.x;
+              const poY = layout.poInfo.y;
+              const poFontSize = layout.poInfo.fontSize || 16;
+              // Substituir qualquer ^A0N com as coordenadas da PO (qualquer tamanho)
+              workingTemplate = workingTemplate.replace(
+                new RegExp(`FT${poX},${poY}\\^A0N,\\d+,\\d+`, 'g'),
+                `FT${poX},${poY}^A0N,${poFontSize},${poFontSize}`
+              );
+              console.log(`[OK] PO fontSize aplicado: ${poFontSize} na posição (${poX},${poY})`);
+            }
+            
+            if (layout.localInfo) {
+              const localX = layout.localInfo.x;
+              const localY = layout.localInfo.y;
+              const localFontSize = layout.localInfo.fontSize || 16;
+              // Substituir qualquer ^A0N com as coordenadas do LOCAL (qualquer tamanho)
+              workingTemplate = workingTemplate.replace(
+                new RegExp(`FT${localX},${localY}\\^A0N,\\d+,\\d+`, 'g'),
+                `FT${localX},${localY}^A0N,${localFontSize},${localFontSize}`
+              );
+            }
             
             // Ajustar retângulos/bordas
             workingTemplate = workingTemplate.replace(/FO31,80\^GB640,280,3/g, 
               `FO${layout.mainBox?.x || 31},${layout.mainBox?.y || 80}^GB${layout.mainBox?.width || 640},${layout.mainBox?.height || 280},3`);
             workingTemplate = workingTemplate.replace(/FO177,81\^GB0,275,3/g,
               `FO${layout.dividerLine?.x || 177},${layout.dividerLine?.y || 81}^GB0,${layout.dividerLine?.height || 275},3`);
-          }
-          
-          // Verificar se há IMAGE_URL do CSV (imagem do QR code)
-          console.log(`\n========== VERIFICANDO IMAGE_URL ==========`);
-          console.log(`[DEBUG] Item completo:`, JSON.stringify(item, null, 2));
-          console.log(`[DEBUG] Chaves do item:`, Object.keys(item));
-          console.log(`[DEBUG] item.IMAGE_URL:`, item.IMAGE_URL);
-          console.log(`[DEBUG] item['IMAGE_URL']:`, item['IMAGE_URL']);
-          
-          const imageUrl = item.IMAGE_URL || item['IMAGE_URL'] || '';
-          let qrImageZPL = null;
-          let useImageForQR = false;
-          
-          console.log(`[DEBUG] IMAGE_URL extraído: "${imageUrl}"`);
-          console.log(`[DEBUG] Tipo: ${typeof imageUrl}, Vazio: ${!imageUrl || imageUrl.trim() === ''}`);
-          
-          if (imageUrl && imageUrl.trim() !== '') {
-            try {
-              console.log(`[IMAGE] Usando IMAGE_URL do CSV: ${imageUrl}`);
-              // Converter imagem para ZPL (tamanho fixo para QR code: 80x80 dots = 1.0 cm)
-              // Tamanho fixo: 1.0 cm x 1.0 cm = 80 x 80 dots (203 DPI)
-              // 1.0 cm = 0.3937 polegadas * 203 DPI ≈ 80 dots
-              const qrWidth = 80;  // 1.0 cm fixo
-              const qrHeight = 80; // 1.0 cm fixo
-              qrImageZPL = await convertImageToZPL(imageUrl, qrWidth, qrHeight);
-              useImageForQR = true;
-              console.log(`[OK] Imagem do QR code convertida para ZPL`);
-              console.log(`   [SIZE] Tamanho aplicado: ${qrWidth}x${qrHeight} dots = ${(qrWidth/203*2.54).toFixed(2)}cm x ${(qrHeight/203*2.54).toFixed(2)}cm`);
-              console.log(`   [DEBUG] Comando ZPL gerado (primeiros 100 chars): ${qrImageZPL ? qrImageZPL.substring(0, 100) : 'null'}`);
-            } catch (imageError) {
-              console.error(`[ERRO] Erro ao converter imagem do IMAGE_URL: ${imageError.message}`);
-              console.error(`   Stack: ${imageError.stack}`);
-              console.warn(`[AVISO] Usando QR code gerado padrão devido ao erro`);
-              useImageForQR = false;
+            
+            // Aplicar altura e largura do barcode usando comando ^BY
+            // O comando ^BYw,r,h define: w=largura do módulo, r=razão de largura, h=altura do módulo
+            // Converter altura do layout (pixels) para altura do módulo em pontos
+            if (layout.barcode?.height || layout.barcode?.width) {
+              const barcodeHeight = layout.barcode?.height 
+                ? Math.round(layout.barcode.height / 1.5) // Converter pixels para altura do módulo
+                : 39; // Padrão
+              
+              // Para largura, usar o primeiro parâmetro do ^BY
+              // A largura do barcode é controlada pela largura do módulo (primeiro parâmetro)
+              // Valores típicos: 2-10, onde maior = mais largo
+              const barcodeWidth = layout.barcode?.width 
+                ? Math.max(2, Math.min(10, Math.round(layout.barcode.width / 100))) // Converter pixels para módulo (2-10)
+                : 2; // Padrão
+              
+              workingTemplate = workingTemplate.replace(/BY2,2,39/g, `BY${barcodeWidth},2,${barcodeHeight}`);
+              console.log(`[OK] Barcode aplicado: largura=${layout.barcode.width || 'padrão'}px -> módulo w=${barcodeWidth}, altura=${layout.barcode.height || 'padrão'}px -> módulo h=${barcodeHeight}`);
             }
-          } else {
-            console.log(`[INFO] IMAGE_URL vazio ou não fornecido, usando QR code gerado`);
           }
-          console.log(`==========================================\n`);
           
-          // Buscar QR codes externos (se disponíveis e não houver IMAGE_URL)
-          let qrData1 = vpn; // Padrão: usar VPN
+          // IMAGE_URL da API Python: usar APENAS como imagem do produto (NÃO como QR code)
+          // QR codes são gerados SEMPRE com dados da VPN usando ^BQN
+          console.log(`[IMAGE] IMAGE_URL da API Python será usado APENAS como imagem do produto (não como QR code)`);
+          
+          // QR codes: SEMPRE gerar com dados da VPN
+          // Os QR codes são gerados automaticamente pelo comando ^BQN do ZPL usando os dados da VPN
+          let qrData1 = vpn;
           let qrData2 = vpn;
           let qrData3 = vpn;
+          console.log(`[QR] ✅ QR codes serão gerados com dados VPN: "${vpn}"`);
+          console.log(`[QR] Os QR codes serão renderizados pelo comando ^BQN do ZPL usando {QR_DATA_1}, {QR_DATA_2}, {QR_DATA_3}`);
+
+          // Processar imagem do sapato usando função compartilhada
+          // Isso garante que print-individual e print-all usem exatamente a mesma configuração
+          const imageResult = await processProductImage(imageUrl, layout, 'print-individual');
+          const { imageX, imageY, imageWidth, imageHeight, imageZPL: shoeImageZPL } = imageResult;
           
-          if (!useImageForQR) {
-          try {
-            const qrCodeResult = qrCodeFinder.findQRCode(poNumber, styleName);
-            if (qrCodeResult && qrCodeResult.qrCode) {
-              // Se encontrou QR code externo, usar para todos os 3 QR codes
-              qrData1 = qrCodeResult.qrCode;
-              qrData2 = qrCodeResult.qrCode;
-              qrData3 = qrCodeResult.qrCode;
-                console.log(`[OK] QR Code externo encontrado e será usado: ${qrCodeResult.fileName}`);
+          // Inserir imagem no template se disponível
+          if (shoeImageZPL && shoeImageZPL.trim() !== '') {
+            const imageCommand = `^FO${imageX},${imageY}${shoeImageZPL}`;
+            console.log(`[IMAGE] [INSERÇÃO] Comando ZPL completo gerado: ^FO${imageX},${imageY}...`);
+            
+            // Procurar por placeholder {IMAGE} ou inserir após o segundo ^XA
+            if (workingTemplate.includes('{IMAGE}')) {
+              workingTemplate = workingTemplate.replace(/{IMAGE}/g, imageCommand);
+              console.log(`[IMAGE] ✅ Imagem inserida no placeholder {IMAGE} na posição (${imageX}, ${imageY})`);
             } else {
-                console.log(`[INFO] QR Code externo não encontrado, usando VPN: ${vpn}`);
+              // Inserir após o segundo ^XA (início da etiqueta)
+              const xaMatches = workingTemplate.match(/\^XA/g);
+              const xaCount = xaMatches ? xaMatches.length : 0;
+              
+              if (xaCount >= 2) {
+                let xaIndex = 0;
+                workingTemplate = workingTemplate.replace(/\^XA/g, (match) => {
+                  xaIndex++;
+                  return xaIndex === 2 ? `${match}\n${imageCommand}` : match;
+                });
+              } else {
+                workingTemplate = workingTemplate.replace(/^XA/m, `^XA\n${imageCommand}`);
+              }
+              console.log(`[IMAGE] ✅ Imagem inserida na posição (${imageX}, ${imageY})`);
             }
-          } catch (qrError) {
-              console.warn(`[AVISO] Erro ao buscar QR code externo, usando VPN:`, qrError.message);
+            
+            // Verificação final
+            if (workingTemplate.includes('^GFA')) {
+              console.log(`[IMAGE] ✅ Imagem confirmada no template antes das substituições de variáveis`);
+            }
+          }
+          
+          // Código antigo removido - agora usando função compartilhada processProductImage
+          // Todo o processamento de imagem foi movido para processProductImage() para garantir consistência
+
+          // Verificar se a imagem foi inserida no template antes de fazer substituições
+          const imageInserted = workingTemplate.includes('^GFA') || workingTemplate.includes(`^FO${imageX || 50},${imageY || 70}`);
+          if (imageInserted) {
+            console.log(`[IMAGE] ✅ Imagem confirmada no template antes das substituições de variáveis`);
+          } else if (imageUrl && imageUrl.trim() !== '') {
+            console.warn(`[IMAGE] ⚠️ Imagem NÃO encontrada no template após inserção! Verificando...`);
+          }
+
+          // PRESERVAR IMAGEM ANTES DE REMOVER COMANDOS RFID
+          // Extrair o comando da imagem para preservá-lo durante a remoção de RFID
+          let preservedImageCommand = null;
+          if (shoeImageZPL && shoeImageZPL.trim() !== '') {
+            // Procurar pelo comando completo da imagem no template
+            const imagePattern = new RegExp(`\\^FO${imageX || '\\d+'},${imageY || '\\d+'}[^\\^]*\\^GFA[^\\^]*\\^FS`, 'g');
+            const imageMatch = workingTemplate.match(imagePattern);
+            if (imageMatch && imageMatch.length > 0) {
+              preservedImageCommand = imageMatch[0];
+              console.log(`[IMAGE] ✅ Comando da imagem preservado antes da remoção de RFID: ${preservedImageCommand.substring(0, 100)}...`);
             }
           }
 
-          // Se usar imagem do IMAGE_URL, substituir os comandos ^BQN ANTES de substituir variáveis
-          if (useImageForQR && qrImageZPL) {
-            // Obter coordenadas dos QR codes do layout ou usar padrão do template
-            const qrLeftX = layout?.qrLeft?.x || 77;
-            const qrLeftY = layout?.qrLeft?.y || 355;
-            const qrTopX = layout?.qrTop?.x || 737;
-            const qrTopY = layout?.qrTop?.y || 167;
-            const qrBottomX = layout?.qrBottom?.x || 739;
-            const qrBottomY = layout?.qrBottom?.y || 355;
-            
-            console.log(`[IMAGE] Substituindo QR codes por imagem nas coordenadas: Left(${qrLeftX},${qrLeftY}), Top(${qrTopX},${qrTopY}), Bottom(${qrBottomX},${qrBottomY})`);
-            
-            // Substituir cada QR code (^BQN) pela imagem (^GF) no template ANTES de substituir variáveis
-            // IMPORTANTE: ^GF (Graphic Field) precisa de ^FO (Field Origin), não ^FT (Field Text)
-            // O template tem formato em múltiplas linhas:
-            // ^FTx,y^BQN,2,3
-            // ^FH\^FDLA,{QR_DATA}^FS
-            
-            // QR esquerdo (FT77,355) - substituir com variável {QR_DATA_3}
-            // Padrão robusto: captura desde ^FT até ^FS incluindo qualquer coisa no meio
-            const patternLeft = new RegExp(`\\^FT${qrLeftX},${qrLeftY}\\^BQN[\\s\\S]*?\\^FH\\\\\\^FDLA,\\{QR_DATA_3\\}\\^FS`, 'g');
-            if (workingTemplate.match(patternLeft)) {
-              workingTemplate = workingTemplate.replace(patternLeft, `^FO${qrLeftX},${qrLeftY}${qrImageZPL}`);
-              console.log(`[OK] QR Left substituído (impressão)`);
+          // REMOVER COMANDOS RFID ANTES DE SUBSTITUIR VARIÁVEIS
+          // Comandos RFID (^RFW, ^RFR, ^RFI, etc.) podem causar "void" na etiqueta quando não conseguem gravar
+          // Remover completamente para evitar problemas durante testes
+          // IMPORTANTE: Usar regex mais específico para não remover comandos de imagem (^GFA)
+          workingTemplate = workingTemplate.replace(/^\^RFW[^\^]*\^FS$/gm, ''); // Remove linha completa com ^RFW
+          workingTemplate = workingTemplate.replace(/\^RFW[^\^]*\^FS/g, ''); // Remove ^RFW em qualquer lugar
+          workingTemplate = workingTemplate.replace(/\^RFR[^\^]*\^FS/g, ''); // Remove ^RFR
+          workingTemplate = workingTemplate.replace(/\^RFI[^\^]*\^FS/g, ''); // Remove ^RFI
+          workingTemplate = workingTemplate.replace(/\^RFT[^\^]*\^FS/g, ''); // Remove ^RFT
+          workingTemplate = workingTemplate.replace(/\^RFU[^\^]*\^FS/g, ''); // Remove ^RFU
+          console.log(`[RFID] ✅ Comandos RFID removidos do template para evitar "void" durante testes`);
+          
+          // RESTAURAR IMAGEM SE FOI REMOVIDA ACIDENTALMENTE
+          if (preservedImageCommand && !workingTemplate.includes('^GFA')) {
+            console.log(`[IMAGE] ⚠️ Imagem foi removida acidentalmente, restaurando...`);
+            // Inserir imagem após o segundo ^XA (início da etiqueta)
+            const xaMatches = workingTemplate.match(/\^XA/g);
+            const xaCount = xaMatches ? xaMatches.length : 0;
+            if (xaCount >= 2) {
+              let xaIndex = 0;
+              workingTemplate = workingTemplate.replace(/\^XA/g, (match) => {
+                xaIndex++;
+                if (xaIndex === 2) {
+                  return `${match}\n${preservedImageCommand}`;
+                }
+                return match;
+              });
+              console.log(`[IMAGE] ✅ Imagem restaurada após remoção de RFID`);
+            } else if (xaCount === 1) {
+              workingTemplate = workingTemplate.replace(/^XA/m, `^XA\n${preservedImageCommand}`);
+              console.log(`[IMAGE] ✅ Imagem restaurada após remoção de RFID (único ^XA)`);
             }
-            
-            // QR superior (FT737,167) - substituir com variável {QR_DATA_1}
-            const patternTop = new RegExp(`\\^FT${qrTopX},${qrTopY}\\^BQN[\\s\\S]*?\\^FH\\\\\\^FDLA,\\{QR_DATA_1\\}\\^FS`, 'g');
-            if (workingTemplate.match(patternTop)) {
-              workingTemplate = workingTemplate.replace(patternTop, `^FO${qrTopX},${qrTopY}${qrImageZPL}`);
-              console.log(`[OK] QR Top substituído (impressão)`);
-            }
-            
-            // QR inferior (FT739,355) - substituir com variável {QR_DATA_2}
-            const patternBottom = new RegExp(`\\^FT${qrBottomX},${qrBottomY}\\^BQN[\\s\\S]*?\\^FH\\\\\\^FDLA,\\{QR_DATA_2\\}\\^FS`, 'g');
-            if (workingTemplate.match(patternBottom)) {
-              workingTemplate = workingTemplate.replace(patternBottom, `^FO${qrBottomX},${qrBottomY}${qrImageZPL}`);
-              console.log(`[OK] QR Bottom substituído (impressão)`);
-            }
-            
-            // Limpeza final: remover qualquer ^BQN restante nas coordenadas (caso algum padrão não tenha sido capturado)
-            const cleanupLeft = new RegExp(`\\^FT${qrLeftX},${qrLeftY}\\^BQN[^\\^]*`, 'g');
-            const cleanupTop = new RegExp(`\\^FT${qrTopX},${qrTopY}\\^BQN[^\\^]*`, 'g');
-            const cleanupBottom = new RegExp(`\\^FT${qrBottomX},${qrBottomY}\\^BQN[^\\^]*`, 'g');
-            
-            workingTemplate = workingTemplate.replace(cleanupLeft, '');
-            workingTemplate = workingTemplate.replace(cleanupTop, '');
-            workingTemplate = workingTemplate.replace(cleanupBottom, '');
-            
-            const remainingBQN = (workingTemplate.match(/\^BQN/g) || []).length;
-            console.log(`[OK] QR codes substituídos pela imagem do IMAGE_URL no template`);
-            console.log(`[DEBUG] Comandos ^BQN restantes após substituição: ${remainingBQN}`);
           }
-
+          
           // Substituir variáveis no template com dados sequenciais
           let workingZPL = workingTemplate
             .replace(/{STYLE_NAME}/g, styleName)
@@ -1762,37 +2359,202 @@ app.post('/api/print-individual', async (req, res) => {
             .replace(/{PO_INFO}/g, poFormatted)
             .replace(/{LOCAL_INFO}/g, '') // LOCAL ignorado - campo vazio
             .replace(/{BARCODE}/g, sequentialBarcode) // Usar barcode sequencial
-            .replace(/{RFID_DATA_HEX}/g, rfidContent) // Enviar dados RFID como string direta (igual ZebraDesigner)
-            .replace(/{RFID_DATA}/g, rfidContent)
-            .replace(/{RFID_STATUS}/g, 'OK');
+            .replace(/{RFID_DATA_HEX}/g, '') // Remover dados RFID (não usar mais)
+            .replace(/{RFID_DATA}/g, ''); // Remover dados RFID (não usar mais)
+          
+          // Remover texto "GRAVADO RFID: {RFID_STATUS}" completamente
+          // Substituir {RFID_STATUS} por string vazia e remover linha completa se necessário
+          workingZPL = workingZPL.replace(/\^FT[^\^]*GRAVADO RFID:[^\^]*\^FS/g, ''); // Remove linha completa com "GRAVADO RFID"
+          workingZPL = workingZPL.replace(/{RFID_STATUS}/g, ''); // Remove placeholder restante
+          
+          // Remover qualquer linha que contenha "GRAVADO RFID" (com ou sem placeholder)
+          workingZPL = workingZPL.replace(/[^\n]*GRAVADO RFID[^\n]*\n?/g, '');
+          
+          // Verificar se ainda há comandos RFID restantes e remover TODOS
+          // Remover comandos RFID mesmo que estejam vazios ou incompletos
+          workingZPL = workingZPL.replace(/\^RFW[^\^]*\^FS/g, ''); // Remove ^RFW
+          workingZPL = workingZPL.replace(/\^RFR[^\^]*\^FS/g, ''); // Remove ^RFR
+          workingZPL = workingZPL.replace(/\^RFI[^\^]*\^FS/g, ''); // Remove ^RFI
+          workingZPL = workingZPL.replace(/\^RFT[^\^]*\^FS/g, ''); // Remove ^RFT
+          workingZPL = workingZPL.replace(/\^RFU[^\^]*\^FS/g, ''); // Remove ^RFU
+          // Remover qualquer comando que comece com ^RF (catch-all)
+          workingZPL = workingZPL.replace(/\^RF[^\^]*\^FS/g, '');
+          // Remover comandos RFID que não terminam com ^FS (casos incompletos)
+          workingZPL = workingZPL.replace(/\^RFW[^\n]*/g, '');
+          workingZPL = workingZPL.replace(/\^RFR[^\n]*/g, '');
+          workingZPL = workingZPL.replace(/\^RFI[^\n]*/g, '');
+          workingZPL = workingZPL.replace(/\^RFT[^\n]*/g, '');
+          workingZPL = workingZPL.replace(/\^RFU[^\n]*/g, '');
+          
+          if (workingZPL.includes('^RF')) {
+            console.warn(`[RFID] ⚠️ Aviso: Ainda há comandos RFID no ZPL após remoção, removendo novamente...`);
+            // Última tentativa: remover qualquer coisa que comece com ^RF até o próximo ^ ou quebra de linha
+            workingZPL = workingZPL.replace(/\^RF[^\^\\n]*/g, '');
+          }
+          
+          // Verificar se ainda há placeholders não substituídos que possam causar "void"
+          // IMPORTANTE: Não remover {IMAGE} se ainda estiver presente (pode ser inserido depois)
+          const remainingPlaceholders = workingZPL.match(/{[^}]+}/g);
+          if (remainingPlaceholders && remainingPlaceholders.length > 0) {
+            // Filtrar placeholders conhecidos que devem ser preservados
+            const knownPlaceholders = ['IMAGE']; // Placeholders que podem ser inseridos depois
+            const unknownPlaceholders = remainingPlaceholders.filter(p => {
+              const placeholderName = p.replace(/[{}]/g, '').toUpperCase();
+              return !knownPlaceholders.includes(placeholderName);
+            });
+            
+            if (unknownPlaceholders.length > 0) {
+              console.warn(`[AVISO] Placeholders não substituídos encontrados: ${unknownPlaceholders.join(', ')}`);
+              // Remover apenas placeholders desconhecidos (não {IMAGE})
+              unknownPlaceholders.forEach(placeholder => {
+                workingZPL = workingZPL.replace(new RegExp(placeholder.replace(/[{}]/g, '\\$&'), 'g'), '');
+              });
+            }
+          }
+          
+          // Verificar se a imagem está presente no ZPL final
+          const imageInFinalZPL = workingZPL.includes('^GFA');
+          if (imageInFinalZPL) {
+            console.log(`[IMAGE] ✅ Imagem confirmada no ZPL final (contém ^GFA)`);
+            // Verificar se o comando completo está presente
+            if (shoeImageZPL && imageX && imageY) {
+              const imageCommandPattern = `^FO${imageX},${imageY}`;
+              if (workingZPL.includes(imageCommandPattern)) {
+                console.log(`[IMAGE] ✅ Comando completo da imagem encontrado no ZPL final: ${imageCommandPattern}...`);
+              } else {
+                console.warn(`[IMAGE] ⚠️ Comando da imagem não encontrado no ZPL final, mas ^GFA está presente`);
+              }
+            }
+          } else if (imageUrl && imageUrl.trim() !== '') {
+            console.error(`[IMAGE] ❌ ERRO: Imagem NÃO encontrada no ZPL final!`);
+            console.error(`[IMAGE] Verificando se foi removida acidentalmente...`);
+            // Tentar inserir a imagem novamente se ainda tivermos o comando preservado
+            if (preservedImageCommand) {
+              console.log(`[IMAGE] 🔄 Tentando restaurar imagem usando comando preservado...`);
+              const xaMatches = workingZPL.match(/\^XA/g);
+              const xaCount = xaMatches ? xaMatches.length : 0;
+              if (xaCount >= 2) {
+                let xaIndex = 0;
+                workingZPL = workingZPL.replace(/\^XA/g, (match) => {
+                  xaIndex++;
+                  if (xaIndex === 2) {
+                    return `${match}\n${preservedImageCommand}`;
+                  }
+                  return match;
+                });
+                console.log(`[IMAGE] ✅ Imagem restaurada no ZPL final após verificação`);
+              } else if (xaCount === 1) {
+                workingZPL = workingZPL.replace(/^XA/m, `^XA\n${preservedImageCommand}`);
+                console.log(`[IMAGE] ✅ Imagem restaurada no ZPL final após verificação (único ^XA)`);
+              }
+            } else if (shoeImageZPL && imageX && imageY) {
+              // Se não tivermos o comando preservado, tentar reconstruir
+              const imageCommand = `^FO${imageX},${imageY}${shoeImageZPL}`;
+              console.log(`[IMAGE] 🔄 Tentando inserir imagem reconstruída no ZPL final...`);
+              const xaMatches = workingZPL.match(/\^XA/g);
+              const xaCount = xaMatches ? xaMatches.length : 0;
+              if (xaCount >= 2) {
+                let xaIndex = 0;
+                workingZPL = workingZPL.replace(/\^XA/g, (match) => {
+                  xaIndex++;
+                  if (xaIndex === 2) {
+                    return `${match}\n${imageCommand}`;
+                  }
+                  return match;
+                });
+                console.log(`[IMAGE] ✅ Imagem reconstruída e inserida no ZPL final`);
+              }
+            }
+          }
+          
+          // Se ainda houver {IMAGE} no ZPL final, significa que a imagem não foi inserida
+          // Isso não é um erro fatal, apenas um aviso
+          if (workingZPL.includes('{IMAGE}')) {
+            console.warn(`[AVISO] Placeholder {IMAGE} ainda presente no ZPL final - imagem pode não ter sido inserida`);
+          }
 
           // Log completo do ZPL para debug
           console.log('\n============ ZPL FINAL GERADO ============');
           console.log(workingZPL);
           console.log('=========================================\n');
 
+          // Verificar conexão antes de imprimir (reconectar se necessário)
+          try {
+            console.log(`[PRINT] Verificando conexão com impressora antes de imprimir etiqueta ${seq}/${itemQty}...`);
+            const connectionTest = await pythonUSBIntegration.testConnection();
+            if (!connectionTest.success || !pythonUSBIntegration.isConnected) {
+              console.warn(`[PRINT] ⚠️ Impressora não está conectada, tentando reconectar...`);
+              // Tentar detectar impressora novamente
+              await pythonUSBIntegration.ensurePrinterName();
+              const retryTest = await pythonUSBIntegration.testConnection();
+              if (!retryTest.success || !pythonUSBIntegration.isConnected) {
+                throw new Error(`Impressora não está online. Verifique se a impressora está ligada e conectada. Status: ${JSON.stringify(retryTest.result)}`);
+              }
+              console.log(`[PRINT] ✅ Reconexão bem-sucedida!`);
+            }
+          } catch (connectionError) {
+            console.error(`[PRINT] ❌ Erro ao verificar conexão: ${connectionError.message}`);
+            throw new Error(`Erro de conexão com a impressora: ${connectionError.message}. Verifique se a impressora está conectada e tente novamente.`);
+          }
+
           // Imprimir cada etiqueta individual (1 cópia por vez para manter sequência)
           const printResult = await pythonUSBIntegration.sendZPL(workingZPL, 'ascii', 1);
           
-          results.push({
-            item: `${styleName} (${seq}/${itemQty})`,
-            barcode: sequentialBarcode,
-            rfid: rfidContent,
-            success: printResult.success,
-            message: printResult.success ? `Etiqueta ${seq} impressa com sucesso` : printResult.error,
-            details: printResult.result
-          });
-          
-          console.log(`[OK] Etiqueta ${styleName} ${seq}/${itemQty} processada:`, printResult.success ? 'OK' : printResult.error);
-          console.log(`   [DATA] Barcode: ${sequentialBarcode}`);
-          console.log(`   [RFID] RFID String Direta: ${rfidContent}`);
+          if (!printResult.success) {
+            console.error(`[PRINT] ❌ Erro ao imprimir etiqueta ${seq}/${itemQty}: ${printResult.error}`);
+            // Se o erro for de conexão, tentar reconectar e imprimir novamente uma vez
+            if (printResult.error && (printResult.error.includes('online') || printResult.error.includes('conectada') || printResult.error.includes('Network'))) {
+              console.log(`[PRINT] Tentando reconectar e reimprimir...`);
+              try {
+                await pythonUSBIntegration.ensurePrinterName();
+                const retryResult = await pythonUSBIntegration.sendZPL(workingZPL, 'ascii', 1);
+                if (retryResult.success) {
+                  console.log(`[PRINT] ✅ Reimpressão bem-sucedida após reconexão!`);
+                  results.push({
+                    item: `${styleName} (${seq}/${itemQty})`,
+                    barcode: sequentialBarcode,
+                    rfid: rfidContent,
+                    success: true,
+                    message: `Etiqueta ${seq} impressa com sucesso (após reconexão)`,
+                    details: retryResult.result
+                  });
+                  console.log(`[OK] Etiqueta ${styleName} ${seq}/${itemQty} processada: OK (após reconexão)`);
+                  console.log(`   [DATA] Barcode: ${sequentialBarcode}`);
+                  console.log(`   [RFID] RFID String Direta: ${rfidContent}`);
+                } else {
+                  throw new Error(retryResult.error || 'Erro ao reimprimir após reconexão');
+                }
+              } catch (retryError) {
+                throw new Error(`Erro de conexão com a impressora: ${retryError.message}. Verifique se a impressora está conectada e tente novamente.`);
+              }
+            } else {
+              throw new Error(printResult.error || 'Erro desconhecido ao imprimir');
+            }
+          } else {
+            results.push({
+              item: `${styleName} (${seq}/${itemQty})`,
+              barcode: sequentialBarcode,
+              rfid: rfidContent,
+              success: printResult.success,
+              message: printResult.success ? `Etiqueta ${seq} impressa com sucesso` : printResult.error,
+              details: printResult.result
+            });
+            
+            console.log(`[OK] Etiqueta ${styleName} ${seq}/${itemQty} processada:`, printResult.success ? 'OK' : printResult.error);
+            console.log(`   [DATA] Barcode: ${sequentialBarcode}`);
+            console.log(`   [RFID] RFID String Direta: ${rfidContent}`);
+          }
           
         } catch (error) {
           console.error(`[ERRO] Erro ao processar ${item.STYLE_NAME} ${seq}/${itemQty}:`, error);
+          const errorMessage = error.message || 'Erro desconhecido';
           results.push({
             item: `${item.STYLE_NAME || 'Desconhecido'} (${seq}/${itemQty})`,
             success: false,
-            message: error.message
+            message: errorMessage,
+            error: errorMessage.includes('conexão') || errorMessage.includes('online') || errorMessage.includes('Network') 
+              ? 'Erro de conexão com a impressora. Verifique se a impressora está conectada e tente novamente.'
+              : errorMessage
           });
         }
       } // Fim do loop de sequência
@@ -1831,7 +2593,7 @@ app.post('/api/print-all', async (req, res) => {
     const results = [];
     let totalEtiquetasProcessadas = 0;
     
-    // Carregar template oficial da Larroud
+    // Carregar template oficial da Larroud (fora do loop para melhor performance)
     const templatePath = path.join(__dirname, '../templates/TEMPLATE_LARROUD_OFICIAL.zpl');
     let larroudTemplate;
     try {
@@ -1839,6 +2601,65 @@ app.post('/api/print-all', async (req, res) => {
     } catch (fileError) {
       console.error('Erro ao carregar template:', fileError.message);
       return res.status(500).json({ error: 'Template ZPL não encontrado' });
+    }
+
+    // Carregar layout customizado (se existir) - fora do loop
+    // Usar layoutName do request se fornecido, senão usar o padrão
+    const layoutName = req.body.layoutName || 'Default';
+    console.log(`[DEBUG] [PRINT-ALL] Tentando carregar layout: "${layoutName}"`);
+    
+    let layout = null;
+    try {
+      // Sempre usar caminho relativo ao projeto (portável)
+      const layoutsDir = path.join(__dirname, 'layouts');
+      
+      // Garantir que o diretório existe
+      if (!fs.existsSync(layoutsDir)) {
+        fs.mkdirSync(layoutsDir, { recursive: true });
+        console.log(`[OK] Diretório layouts criado: ${layoutsDir}`);
+      }
+      
+      const layoutPath = path.join(layoutsDir, `${layoutName}.json`);
+      
+      console.log(`[DEBUG] [PRINT-ALL] Procurando layout em: ${layoutPath}`);
+      console.log(`[DEBUG] [PRINT-ALL] Layout existe? ${fs.existsSync(layoutPath)}`);
+      
+      if (fs.existsSync(layoutPath)) {
+        const layoutData = fs.readFileSync(layoutPath, 'utf8');
+        const layoutObj = JSON.parse(layoutData);
+        layout = layoutObj.layout || layoutObj;
+        console.log(`[OK] Layout "${layoutName}" carregado para impressão em massa`);
+        console.log('[DEBUG] Layout keys:', Object.keys(layout));
+        // Verificar alguns valores para confirmar que está em dots
+        if (layout.labelStyleName) {
+          console.log('[DEBUG] Layout labelStyleName:', layout.labelStyleName);
+        }
+        if (layout.styleName) {
+          console.log('[DEBUG] Layout styleName:', layout.styleName);
+        }
+      } else {
+        console.warn(`[AVISO] Layout "${layoutName}" não encontrado em ${layoutPath}`);
+        // Tentar carregar Default.json se o layout solicitado não existir
+        const defaultLayoutPath = path.join(layoutsDir, 'Default.json');
+        if (fs.existsSync(defaultLayoutPath) && layoutName !== 'Default') {
+          console.log(`[DEBUG] Tentando carregar Default.json como fallback`);
+          const layoutData = fs.readFileSync(defaultLayoutPath, 'utf8');
+          const layoutObj = JSON.parse(layoutData);
+          layout = layoutObj.layout || layoutObj;
+          console.log('[OK] Layout Default carregado como fallback');
+        } else {
+          console.warn(`[AVISO] Nenhum layout encontrado. Usando template sem modificações.`);
+        }
+      }
+    } catch (layoutError) {
+      console.error(`[ERRO] Erro ao carregar layout "${layoutName}":`, layoutError.message);
+      console.error(layoutError.stack);
+    }
+    
+    // Se não encontrou layout, criar layout padrão vazio para não quebrar
+    if (!layout) {
+      console.warn(`[AVISO] Layout "${layoutName}" não foi carregado. Usando template sem modificações.`);
+      layout = {}; // Layout vazio para não quebrar o código
     }
     
     // Processar cada item com numeração sequencial
@@ -1855,6 +2676,7 @@ app.post('/api/print-all', async (req, res) => {
           const vpn = String(item.VPN || item.SKU || 'N/A');
           const color = String(item.DESCRIPTION || item.COLOR || 'N/A');
           const size = String(item.SIZE || 'N/A');
+          const referencia = String(item.REF || item.referencia || '').trim();
           const barcodeBase = String(item.BARCODE || item.VPN || '000000000000').substring(0, 12).padStart(12, '0');
           
           // Gerar barcode sequencial (último dígito incrementado)
@@ -1878,21 +2700,36 @@ app.post('/api/print-all', async (req, res) => {
           
           console.log(`[RFID] RFID formato ZebraDesigner (string direta): ${rfidContent}`);
           
-          // Carregar layout customizado (se existir)
-          let layout = null;
-          try {
-            const layoutPath = path.join(__dirname, process.env.LAYOUT_PATH || 'label-layout.json');
-            if (fs.existsSync(layoutPath)) {
-              const layoutData = fs.readFileSync(layoutPath, 'utf8');
-              layout = JSON.parse(layoutData);
+          // Buscar imagem da API Python usando a referência
+          // Primeiro tentar usar IMAGE_URL do item (se já estiver presente)
+          let imageUrl = item.IMAGE_URL || item['IMAGE_URL'] || item.image_url || item['image_url'] || '';
+          
+          // Se não houver IMAGE_URL mas houver referência, buscar da API Python
+          if (!imageUrl && referencia) {
+            try {
+              // Construir URL manualmente usando a referência normalizada
+              const normalizedRef = referencia.replace(/[.\-]/g, '');
+              if (normalizedRef.length === 7) {
+                // Detectar porta da API Python
+                const imageProxyPort = process.env._IMAGE_PROXY_ACTUAL_PORT || process.env.IMAGE_PROXY_PORT || '8000';
+                imageUrl = `http://127.0.0.1:${imageProxyPort}/image/reference/${normalizedRef}`;
+                console.log(`[IMAGE] ✅ URL construída para referência "${referencia}" (normalizada: ${normalizedRef}): ${imageUrl} [print-all]`);
+              } else {
+                console.warn(`[IMAGE] ⚠️ Referência "${referencia}" não tem formato válido (esperado: 7 dígitos após normalização) [print-all]`);
+              }
+            } catch (imageError) {
+              console.warn(`[IMAGE] ⚠️ Erro ao construir URL da imagem: ${imageError.message} [print-all]`);
             }
-          } catch (layoutError) {
-            console.warn('Erro ao carregar layout customizado, usando padrão:', layoutError.message);
+          }
+          
+          if (!imageUrl) {
+            console.log(`[IMAGE] ⚠️ IMAGE_URL não disponível para referência "${referencia}" [print-all]`);
           }
 
           // Aplicar layout customizado ao template se disponível
           let workingTemplate = larroudTemplate;
-          if (layout) {
+          // Verificar se layout tem propriedades (não é objeto vazio)
+          if (layout && Object.keys(layout).length > 0) {
             // Substituir coordenadas dos labels (textos fixos)
             workingTemplate = workingTemplate.replace(/FT187,147/g, `FT${layout.labelStyleName?.x || 187},${layout.labelStyleName?.y || 147}`);
             workingTemplate = workingTemplate.replace(/FT188,176/g, `FT${layout.labelVpn?.x || 188},${layout.labelVpn?.y || 176}`);
@@ -1920,6 +2757,11 @@ app.post('/api/print-all', async (req, res) => {
             workingTemplate = workingTemplate.replace(/FT701,220/g, `FT${layout.poInfo?.x || 701},${layout.poInfo?.y || 220}`);
             // LOCAL INFO: FT680,238
             workingTemplate = workingTemplate.replace(/FT680,238/g, `FT${layout.localInfo?.x || 680},${layout.localInfo?.y || 238}`);
+            
+            // Substituir tamanhos de QR codes (após coordenadas já substituídas) - IMPORTANTE: mesma lógica do print-individual
+            workingTemplate = workingTemplate.replace(`FT${layout.qrTop?.x || 737},${layout.qrTop?.y || 167}^BQN,2,3`, `FT${layout.qrTop?.x || 737},${layout.qrTop?.y || 167}^BQN,2,${layout.qrTop?.size || 3}`);
+            workingTemplate = workingTemplate.replace(`FT${layout.qrBottom?.x || 739},${layout.qrBottom?.y || 355}^BQN,2,3`, `FT${layout.qrBottom?.x || 739},${layout.qrBottom?.y || 355}^BQN,2,${layout.qrBottom?.size || 3}`);
+            workingTemplate = workingTemplate.replace(`FT${layout.qrLeft?.x || 77},${layout.qrLeft?.y || 355}^BQN,2,3`, `FT${layout.qrLeft?.x || 77},${layout.qrLeft?.y || 355}^BQN,2,${layout.qrLeft?.size || 3}`);
             
             // Substituir fontSize (depois das coordenadas)
             workingTemplate = workingTemplate.replace(/FT\d+,\d+\^A0N,20,23/g, (match) => {
@@ -1956,18 +2798,30 @@ app.post('/api/print-all', async (req, res) => {
               return match;
             });
             
-            workingTemplate = workingTemplate.replace(/FT\d+,\d+\^A0N,16,15/g, (match) => {
-              const coords = match.match(/FT(\d+),(\d+)/);
-              const x = parseInt(coords[1]);
-              const y = parseInt(coords[2]);
-              
-              if (x === layout.poInfo?.x && y === layout.poInfo?.y) {
-                return `FT${x},${y}^A0N,${layout.poInfo.fontSize || 16},${layout.poInfo.fontSize || 16}`;
-              } else if (x === layout.localInfo?.x && y === layout.localInfo?.y) {
-                return `FT${x},${y}^A0N,${layout.localInfo.fontSize || 16},${layout.localInfo.fontSize || 16}`;
-              }
-              return match;
-            });
+            // Substituir fontSize da PO e LOCAL de forma mais robusta (PRINT-ALL)
+            // Procurar por qualquer tamanho de fonte na posição da PO/LOCAL
+            if (layout.poInfo) {
+              const poX = layout.poInfo.x;
+              const poY = layout.poInfo.y;
+              const poFontSize = layout.poInfo.fontSize || 16;
+              // Substituir qualquer ^A0N com as coordenadas da PO (qualquer tamanho)
+              workingTemplate = workingTemplate.replace(
+                new RegExp(`FT${poX},${poY}\\^A0N,\\d+,\\d+`, 'g'),
+                `FT${poX},${poY}^A0N,${poFontSize},${poFontSize}`
+              );
+              console.log(`[OK] [PRINT-ALL] PO fontSize aplicado: ${poFontSize} na posição (${poX},${poY})`);
+            }
+            
+            if (layout.localInfo) {
+              const localX = layout.localInfo.x;
+              const localY = layout.localInfo.y;
+              const localFontSize = layout.localInfo.fontSize || 16;
+              // Substituir qualquer ^A0N com as coordenadas do LOCAL (qualquer tamanho)
+              workingTemplate = workingTemplate.replace(
+                new RegExp(`FT${localX},${localY}\\^A0N,\\d+,\\d+`, 'g'),
+                `FT${localX},${localY}^A0N,${localFontSize},${localFontSize}`
+              );
+            }
             
             // Ajustar retângulos/bordas
             // Retângulo principal: ^FO31,80^GB640,280,3^FS
@@ -1977,116 +2831,125 @@ app.post('/api/print-all', async (req, res) => {
             // Linha divisória: ^FO177,81^GB0,275,3^FS
             workingTemplate = workingTemplate.replace(/FO177,81\^GB0,275,3/g,
               `FO${layout.dividerLine?.x || 177},${layout.dividerLine?.y || 81}^GB0,${layout.dividerLine?.height || 275},3`);
-          }
-          
-          // Verificar se há IMAGE_URL do CSV (imagem do QR code)
-          console.log(`\n========== VERIFICANDO IMAGE_URL ==========`);
-          console.log(`[DEBUG] Item completo:`, JSON.stringify(item, null, 2));
-          console.log(`[DEBUG] Chaves do item:`, Object.keys(item));
-          console.log(`[DEBUG] item.IMAGE_URL:`, item.IMAGE_URL);
-          console.log(`[DEBUG] item['IMAGE_URL']:`, item['IMAGE_URL']);
-          
-          const imageUrl = item.IMAGE_URL || item['IMAGE_URL'] || '';
-          let qrImageZPL = null;
-          let useImageForQR = false;
-          
-          console.log(`[DEBUG] IMAGE_URL extraído: "${imageUrl}"`);
-          console.log(`[DEBUG] Tipo: ${typeof imageUrl}, Vazio: ${!imageUrl || imageUrl.trim() === ''}`);
-          
-          if (imageUrl && imageUrl.trim() !== '') {
-            try {
-              console.log(`[IMAGE] Usando IMAGE_URL do CSV: ${imageUrl}`);
-              // Converter imagem para ZPL (tamanho fixo para QR code: 80x80 dots = 1.0 cm)
-              // Tamanho fixo: 1.0 cm x 1.0 cm = 80 x 80 dots (203 DPI)
-              // 1.0 cm = 0.3937 polegadas * 203 DPI ≈ 80 dots
-              const qrWidth = 80;  // 1.0 cm fixo
-              const qrHeight = 80; // 1.0 cm fixo
-              qrImageZPL = await convertImageToZPL(imageUrl, qrWidth, qrHeight);
-              useImageForQR = true;
-              console.log(`[OK] Imagem do QR code convertida para ZPL`);
-              console.log(`   [SIZE] Tamanho aplicado: ${qrWidth}x${qrHeight} dots = ${(qrWidth/203*2.54).toFixed(2)}cm x ${(qrHeight/203*2.54).toFixed(2)}cm`);
-              console.log(`   [DEBUG] Comando ZPL gerado (primeiros 100 chars): ${qrImageZPL ? qrImageZPL.substring(0, 100) : 'null'}`);
-            } catch (imageError) {
-              console.error(`[ERRO] Erro ao converter imagem do IMAGE_URL: ${imageError.message}`);
-              console.error(`   Stack: ${imageError.stack}`);
-              console.warn(`[AVISO] Usando QR code gerado padrão devido ao erro`);
-              useImageForQR = false;
+            
+            // Aplicar altura e largura do barcode usando comando ^BY
+            // O comando ^BYw,r,h define: w=largura do módulo, r=razão de largura, h=altura do módulo
+            if (layout.barcode?.height || layout.barcode?.width) {
+              const barcodeHeight = layout.barcode?.height 
+                ? Math.round(layout.barcode.height / 1.5) // Converter pixels para altura do módulo
+                : 39; // Padrão
+              
+              // Para largura, usar o primeiro parâmetro do ^BY
+              // A largura do barcode é controlada pela largura do módulo (primeiro parâmetro)
+              // Valores típicos: 2-10, onde maior = mais largo
+              const barcodeWidth = layout.barcode?.width 
+                ? Math.max(2, Math.min(10, Math.round(layout.barcode.width / 100))) // Converter pixels para módulo (2-10)
+                : 2; // Padrão
+              
+              workingTemplate = workingTemplate.replace(/BY2,2,39/g, `BY${barcodeWidth},2,${barcodeHeight}`);
+              console.log(`[OK] [PRINT-ALL] Barcode aplicado: largura=${layout.barcode.width || 'padrão'}px -> módulo w=${barcodeWidth}, altura=${layout.barcode.height || 'padrão'}px -> módulo h=${barcodeHeight}`);
             }
-          } else {
-            console.log(`[INFO] IMAGE_URL vazio ou não fornecido, usando QR code gerado`);
           }
-          console.log(`==========================================\n`);
           
-          // Buscar QR codes externos (se disponíveis e não houver IMAGE_URL)
-          let qrData1 = vpn; // Padrão: usar VPN
+          // IMAGE_URL da API Python: usar APENAS como imagem do produto (NÃO como QR code)
+          // QR codes são gerados SEMPRE com dados da VPN usando ^BQN
+          console.log(`[IMAGE] IMAGE_URL da API Python será usado APENAS como imagem do produto (não como QR code) (print-all)`);
+          
+          // QR codes: SEMPRE gerar com dados da VPN
+          // Os QR codes são gerados automaticamente pelo comando ^BQN do ZPL usando os dados da VPN
+          let qrData1 = vpn;
           let qrData2 = vpn;
           let qrData3 = vpn;
+          console.log(`[QR] ✅ QR codes serão gerados com dados VPN: "${vpn}" (print-all)`);
+          console.log(`[QR] Os QR codes serão renderizados pelo comando ^BQN do ZPL usando {QR_DATA_1}, {QR_DATA_2}, {QR_DATA_3}`);
+
+          // Processar imagem do sapato usando função compartilhada
+          // Isso garante que print-individual e print-all usem exatamente a mesma configuração
+          const imageResult = await processProductImage(imageUrl, layout, 'print-all');
+          const { imageX, imageY, imageWidth, imageHeight, imageZPL: shoeImageZPL } = imageResult;
           
-          if (!useImageForQR) {
-          try {
-            const qrCodeResult = qrCodeFinder.findQRCode(poNumber, styleName);
-            if (qrCodeResult && qrCodeResult.qrCode) {
-              // Se encontrou QR code externo, usar para todos os 3 QR codes
-              qrData1 = qrCodeResult.qrCode;
-              qrData2 = qrCodeResult.qrCode;
-              qrData3 = qrCodeResult.qrCode;
-                console.log(`[OK] QR Code externo encontrado e será usado: ${qrCodeResult.fileName}`);
+          // Inserir imagem no template se disponível
+          if (shoeImageZPL && shoeImageZPL.trim() !== '') {
+            const imageCommand = `^FO${imageX},${imageY}${shoeImageZPL}`;
+            console.log(`[IMAGE] [INSERÇÃO] [print-all] Comando ZPL completo gerado: ^FO${imageX},${imageY}...`);
+            
+            // Procurar por placeholder {IMAGE} ou inserir após o segundo ^XA
+            if (workingTemplate.includes('{IMAGE}')) {
+              workingTemplate = workingTemplate.replace(/{IMAGE}/g, imageCommand);
+              console.log(`[IMAGE] ✅ Imagem inserida no placeholder {IMAGE} na posição (${imageX}, ${imageY}) (print-all)`);
             } else {
-                console.log(`[INFO] QR Code externo não encontrado, usando VPN: ${vpn}`);
+              // Inserir após o segundo ^XA (início da etiqueta)
+              const xaMatches = workingTemplate.match(/\^XA/g);
+              const xaCount = xaMatches ? xaMatches.length : 0;
+              
+              if (xaCount >= 2) {
+                let xaIndex = 0;
+                workingTemplate = workingTemplate.replace(/\^XA/g, (match) => {
+                  xaIndex++;
+                  return xaIndex === 2 ? `${match}\n${imageCommand}` : match;
+                });
+              } else {
+                workingTemplate = workingTemplate.replace(/^XA/m, `^XA\n${imageCommand}`);
+              }
+              console.log(`[IMAGE] ✅ Imagem inserida na posição (${imageX}, ${imageY}) (print-all)`);
             }
-          } catch (qrError) {
-              console.warn(`[AVISO] Erro ao buscar QR code externo, usando VPN:`, qrError.message);
+            
+            // Verificação final
+            if (workingTemplate.includes('^GFA')) {
+              console.log(`[IMAGE] ✅ Imagem confirmada no template antes das substituições de variáveis (print-all)`);
+            }
+          }
+          
+          // Código antigo removido - agora usando função compartilhada processProductImage
+          // Todo o processamento de imagem foi movido para processProductImage() para garantir consistência
+
+          // PRESERVAR IMAGEM ANTES DE REMOVER COMANDOS RFID (print-all)
+          // Extrair o comando da imagem para preservá-lo durante a remoção de RFID
+          let preservedImageCommand = null;
+          if (shoeImageZPL && shoeImageZPL.trim() !== '') {
+            // Procurar pelo comando completo da imagem no template
+            const imagePattern = new RegExp(`\\^FO${imageX || '\\d+'},${imageY || '\\d+'}[^\\^]*\\^GFA[^\\^]*\\^FS`, 'g');
+            const imageMatch = workingTemplate.match(imagePattern);
+            if (imageMatch && imageMatch.length > 0) {
+              preservedImageCommand = imageMatch[0];
+              console.log(`[IMAGE] ✅ Comando da imagem preservado antes da remoção de RFID (print-all): ${preservedImageCommand.substring(0, 100)}...`);
             }
           }
 
-          // Se usar imagem do IMAGE_URL, substituir os comandos ^BQN ANTES de substituir variáveis
-          if (useImageForQR && qrImageZPL) {
-            // Obter coordenadas dos QR codes do layout ou usar padrão do template
-            const qrLeftX = layout?.qrLeft?.x || 77;
-            const qrLeftY = layout?.qrLeft?.y || 355;
-            const qrTopX = layout?.qrTop?.x || 737;
-            const qrTopY = layout?.qrTop?.y || 167;
-            const qrBottomX = layout?.qrBottom?.x || 739;
-            const qrBottomY = layout?.qrBottom?.y || 355;
-            
-            console.log(`[IMAGE] Substituindo QR codes por imagem nas coordenadas: Left(${qrLeftX},${qrLeftY}), Top(${qrTopX},${qrTopY}), Bottom(${qrBottomX},${qrBottomY})`);
-            
-            // Substituir cada QR code (^BQN) pela imagem (^GF) no template ANTES de substituir variáveis
-            // QR esquerdo (FT77,355) - substituir com variável {QR_DATA_3}
-            workingTemplate = workingTemplate.replace(
-              new RegExp(`\\^FT${qrLeftX},${qrLeftY}\\^BQN,2,[0-9]+\\s*\\n\\s*\\^FH\\\\\\^FDLA,\\{QR_DATA_3\\}\\^FS`, 'g'),
-              `^FT${qrLeftX},${qrLeftY}${qrImageZPL}`
-            );
-            
-            // QR superior (FT737,167) - substituir com variável {QR_DATA_1}
-            workingTemplate = workingTemplate.replace(
-              new RegExp(`\\^FT${qrTopX},${qrTopY}\\^BQN,2,[0-9]+\\s*\\n\\s*\\^FH\\\\\\^FDLA,\\{QR_DATA_1\\}\\^FS`, 'g'),
-              `^FT${qrTopX},${qrTopY}${qrImageZPL}`
-            );
-            
-            // QR inferior (FT739,355) - substituir com variável {QR_DATA_2}
-            workingTemplate = workingTemplate.replace(
-              new RegExp(`\\^FT${qrBottomX},${qrBottomY}\\^BQN,2,[0-9]+\\s*\\n\\s*\\^FH\\\\\\^FDLA,\\{QR_DATA_2\\}\\^FS`, 'g'),
-              `^FT${qrBottomX},${qrBottomY}${qrImageZPL}`
-            );
-            
-            // Também tentar padrões alternativos (sem quebra de linha)
-            workingTemplate = workingTemplate.replace(
-              new RegExp(`\\^FT${qrLeftX},${qrLeftY}\\^BQN,2,[0-9]+\\^FH\\\\\\^FDLA,\\{QR_DATA_3\\}\\^FS`, 'g'),
-              `^FT${qrLeftX},${qrLeftY}${qrImageZPL}`
-            );
-            workingTemplate = workingTemplate.replace(
-              new RegExp(`\\^FT${qrTopX},${qrTopY}\\^BQN,2,[0-9]+\\^FH\\\\\\^FDLA,\\{QR_DATA_1\\}\\^FS`, 'g'),
-              `^FT${qrTopX},${qrTopY}${qrImageZPL}`
-            );
-            workingTemplate = workingTemplate.replace(
-              new RegExp(`\\^FT${qrBottomX},${qrBottomY}\\^BQN,2,[0-9]+\\^FH\\\\\\^FDLA,\\{QR_DATA_2\\}\\^FS`, 'g'),
-              `^FT${qrBottomX},${qrBottomY}${qrImageZPL}`
-            );
-            
-            console.log(`[OK] QR codes substituídos pela imagem do IMAGE_URL no template`);
+          // REMOVER COMANDOS RFID ANTES DE SUBSTITUIR VARIÁVEIS (print-all)
+          // Comandos RFID (^RFW, ^RFR, ^RFI, etc.) podem causar "void" na etiqueta quando não conseguem gravar
+          // Remover completamente para evitar problemas durante testes
+          // IMPORTANTE: Usar regex mais específico para não remover comandos de imagem (^GFA)
+          workingTemplate = workingTemplate.replace(/^\^RFW[^\^]*\^FS$/gm, ''); // Remove linha completa com ^RFW
+          workingTemplate = workingTemplate.replace(/\^RFW[^\^]*\^FS/g, ''); // Remove ^RFW em qualquer lugar
+          workingTemplate = workingTemplate.replace(/\^RFR[^\^]*\^FS/g, ''); // Remove ^RFR
+          workingTemplate = workingTemplate.replace(/\^RFI[^\^]*\^FS/g, ''); // Remove ^RFI
+          workingTemplate = workingTemplate.replace(/\^RFT[^\^]*\^FS/g, ''); // Remove ^RFT
+          workingTemplate = workingTemplate.replace(/\^RFU[^\^]*\^FS/g, ''); // Remove ^RFU
+          console.log(`[RFID] ✅ Comandos RFID removidos do template para evitar "void" durante testes (print-all)`);
+          
+          // RESTAURAR IMAGEM SE FOI REMOVIDA ACIDENTALMENTE (print-all)
+          if (preservedImageCommand && !workingTemplate.includes('^GFA')) {
+            console.log(`[IMAGE] ⚠️ Imagem foi removida acidentalmente, restaurando... (print-all)`);
+            // Inserir imagem após o segundo ^XA (início da etiqueta)
+            const xaMatches = workingTemplate.match(/\^XA/g);
+            const xaCount = xaMatches ? xaMatches.length : 0;
+            if (xaCount >= 2) {
+              let xaIndex = 0;
+              workingTemplate = workingTemplate.replace(/\^XA/g, (match) => {
+                xaIndex++;
+                if (xaIndex === 2) {
+                  return `${match}\n${preservedImageCommand}`;
+                }
+                return match;
+              });
+              console.log(`[IMAGE] ✅ Imagem restaurada após remoção de RFID (print-all)`);
+            } else if (xaCount === 1) {
+              workingTemplate = workingTemplate.replace(/^XA/m, `^XA\n${preservedImageCommand}`);
+              console.log(`[IMAGE] ✅ Imagem restaurada após remoção de RFID (único ^XA) (print-all)`);
+            }
           }
-
+          
           // Substituir variáveis no template com dados sequenciais
           let workingZPL = workingTemplate
             .replace(/{STYLE_NAME}/g, styleName)
@@ -2101,28 +2964,187 @@ app.post('/api/print-all', async (req, res) => {
             .replace(/{PO_INFO}/g, poFormatted)
             .replace(/{LOCAL_INFO}/g, '') // LOCAL ignorado - campo vazio
             .replace(/{BARCODE}/g, sequentialBarcode)
-            .replace(/{RFID_DATA_HEX}/g, rfidContent)
-            .replace(/{RFID_DATA}/g, rfidContent)
-            .replace(/{RFID_STATUS}/g, 'OK');
+            .replace(/{RFID_DATA_HEX}/g, '') // Remover dados RFID (não usar mais)
+            .replace(/{RFID_DATA}/g, ''); // Remover dados RFID (não usar mais)
+          
+          // Remover texto "GRAVADO RFID: {RFID_STATUS}" completamente
+          // Substituir {RFID_STATUS} por string vazia e remover linha completa se necessário
+          workingZPL = workingZPL.replace(/\^FT[^\^]*GRAVADO RFID:[^\^]*\^FS/g, ''); // Remove linha completa com "GRAVADO RFID"
+          workingZPL = workingZPL.replace(/{RFID_STATUS}/g, ''); // Remove placeholder restante
+          
+          // Remover qualquer linha que contenha "GRAVADO RFID" (com ou sem placeholder)
+          workingZPL = workingZPL.replace(/[^\n]*GRAVADO RFID[^\n]*\n?/g, '');
+          
+          // Verificar se ainda há comandos RFID restantes e remover TODOS (print-all)
+          // Remover comandos RFID mesmo que estejam vazios ou incompletos
+          workingZPL = workingZPL.replace(/\^RFW[^\^]*\^FS/g, ''); // Remove ^RFW
+          workingZPL = workingZPL.replace(/\^RFR[^\^]*\^FS/g, ''); // Remove ^RFR
+          workingZPL = workingZPL.replace(/\^RFI[^\^]*\^FS/g, ''); // Remove ^RFI
+          workingZPL = workingZPL.replace(/\^RFT[^\^]*\^FS/g, ''); // Remove ^RFT
+          workingZPL = workingZPL.replace(/\^RFU[^\^]*\^FS/g, ''); // Remove ^RFU
+          // Remover qualquer comando que comece com ^RF (catch-all)
+          workingZPL = workingZPL.replace(/\^RF[^\^]*\^FS/g, '');
+          // Remover comandos RFID que não terminam com ^FS (casos incompletos)
+          workingZPL = workingZPL.replace(/\^RFW[^\n]*/g, '');
+          workingZPL = workingZPL.replace(/\^RFR[^\n]*/g, '');
+          workingZPL = workingZPL.replace(/\^RFI[^\n]*/g, '');
+          workingZPL = workingZPL.replace(/\^RFT[^\n]*/g, '');
+          workingZPL = workingZPL.replace(/\^RFU[^\n]*/g, '');
+          
+          if (workingZPL.includes('^RF')) {
+            console.warn(`[RFID] ⚠️ Aviso: Ainda há comandos RFID no ZPL após remoção, removendo novamente... (print-all)`);
+            // Última tentativa: remover qualquer coisa que comece com ^RF até o próximo ^ ou quebra de linha
+            workingZPL = workingZPL.replace(/\^RF[^\^\\n]*/g, '');
+          }
+          
+          // Verificar se ainda há placeholders não substituídos que possam causar "void"
+          // IMPORTANTE: Não remover {IMAGE} se ainda estiver presente (pode ser inserido depois)
+          const remainingPlaceholders = workingZPL.match(/{[^}]+}/g);
+          if (remainingPlaceholders && remainingPlaceholders.length > 0) {
+            // Filtrar placeholders conhecidos que devem ser preservados
+            const knownPlaceholders = ['IMAGE']; // Placeholders que podem ser inseridos depois
+            const unknownPlaceholders = remainingPlaceholders.filter(p => {
+              const placeholderName = p.replace(/[{}]/g, '').toUpperCase();
+              return !knownPlaceholders.includes(placeholderName);
+            });
+            
+            if (unknownPlaceholders.length > 0) {
+              console.warn(`[AVISO] [print-all] Placeholders não substituídos encontrados: ${unknownPlaceholders.join(', ')}`);
+              // Remover apenas placeholders desconhecidos (não {IMAGE})
+              unknownPlaceholders.forEach(placeholder => {
+                workingZPL = workingZPL.replace(new RegExp(placeholder.replace(/[{}]/g, '\\$&'), 'g'), '');
+              });
+            }
+          }
+          
+          // Verificar se a imagem está presente no ZPL final
+          const imageInFinalZPL = workingZPL.includes('^GFA');
+          if (imageInFinalZPL) {
+            console.log(`[IMAGE] ✅ Imagem confirmada no ZPL final (contém ^GFA) [print-all]`);
+            // Verificar se o comando completo está presente
+            if (shoeImageZPL && imageX && imageY) {
+              const imageCommandPattern = `^FO${imageX},${imageY}`;
+              if (workingZPL.includes(imageCommandPattern)) {
+                console.log(`[IMAGE] ✅ Comando completo da imagem encontrado no ZPL final: ${imageCommandPattern}... [print-all]`);
+              } else {
+                console.warn(`[IMAGE] ⚠️ Comando da imagem não encontrado no ZPL final, mas ^GFA está presente [print-all]`);
+              }
+            }
+          } else if (imageUrl && imageUrl.trim() !== '') {
+            console.error(`[IMAGE] ❌ ERRO: Imagem NÃO encontrada no ZPL final! [print-all]`);
+            console.error(`[IMAGE] Verificando se foi removida acidentalmente... [print-all]`);
+            // Tentar inserir a imagem novamente se ainda tivermos o comando preservado
+            if (preservedImageCommand) {
+              console.log(`[IMAGE] 🔄 Tentando restaurar imagem usando comando preservado... [print-all]`);
+              const xaMatches = workingZPL.match(/\^XA/g);
+              const xaCount = xaMatches ? xaMatches.length : 0;
+              if (xaCount >= 2) {
+                let xaIndex = 0;
+                workingZPL = workingZPL.replace(/\^XA/g, (match) => {
+                  xaIndex++;
+                  if (xaIndex === 2) {
+                    return `${match}\n${preservedImageCommand}`;
+                  }
+                  return match;
+                });
+                console.log(`[IMAGE] ✅ Imagem restaurada no ZPL final após verificação [print-all]`);
+              } else if (xaCount === 1) {
+                workingZPL = workingZPL.replace(/^XA/m, `^XA\n${preservedImageCommand}`);
+                console.log(`[IMAGE] ✅ Imagem restaurada no ZPL final após verificação (único ^XA) [print-all]`);
+              }
+            } else if (shoeImageZPL && imageX && imageY) {
+              // Se não tivermos o comando preservado, tentar reconstruir
+              const imageCommand = `^FO${imageX},${imageY}${shoeImageZPL}`;
+              console.log(`[IMAGE] 🔄 Tentando inserir imagem reconstruída no ZPL final... [print-all]`);
+              const xaMatches = workingZPL.match(/\^XA/g);
+              const xaCount = xaMatches ? xaMatches.length : 0;
+              if (xaCount >= 2) {
+                let xaIndex = 0;
+                workingZPL = workingZPL.replace(/\^XA/g, (match) => {
+                  xaIndex++;
+                  if (xaIndex === 2) {
+                    return `${match}\n${imageCommand}`;
+                  }
+                  return match;
+                });
+                console.log(`[IMAGE] ✅ Imagem reconstruída e inserida no ZPL final [print-all]`);
+              }
+            }
+          }
+          
+          // Se ainda houver {IMAGE} no ZPL final, significa que a imagem não foi inserida
+          // Isso não é um erro fatal, apenas um aviso
+          if (workingZPL.includes('{IMAGE}')) {
+            console.warn(`[AVISO] [print-all] Placeholder {IMAGE} ainda presente no ZPL final - imagem pode não ter sido inserida`);
+          }
 
           // Log completo do ZPL para debug
           console.log('\n============ ZPL FINAL GERADO (PRINT-ALL) ============');
           console.log(workingZPL);
           console.log('=========================================\n');
 
+          // Verificar conexão antes de imprimir (reconectar se necessário)
+          try {
+            console.log(`[PRINT] [print-all] Verificando conexão com impressora antes de imprimir etiqueta ${seq}/${itemQty}...`);
+            const connectionTest = await pythonUSBIntegration.testConnection();
+            if (!connectionTest.success || !pythonUSBIntegration.isConnected) {
+              console.warn(`[PRINT] [print-all] ⚠️ Impressora não está conectada, tentando reconectar...`);
+              // Tentar detectar impressora novamente
+              await pythonUSBIntegration.ensurePrinterName();
+              const retryTest = await pythonUSBIntegration.testConnection();
+              if (!retryTest.success || !pythonUSBIntegration.isConnected) {
+                throw new Error(`Impressora não está online. Verifique se a impressora está ligada e conectada. Status: ${JSON.stringify(retryTest.result)}`);
+              }
+              console.log(`[PRINT] [print-all] ✅ Reconexão bem-sucedida!`);
+            }
+          } catch (connectionError) {
+            console.error(`[PRINT] [print-all] ❌ Erro ao verificar conexão: ${connectionError.message}`);
+            throw new Error(`Erro de conexão com a impressora: ${connectionError.message}. Verifique se a impressora está conectada e tente novamente.`);
+          }
+
           // Imprimir cada etiqueta individual (1 cópia por vez para manter sequência)
           const printResult = await pythonUSBIntegration.sendZPL(workingZPL, 'ascii', 1);
           
-          results.push({
-            item: `${styleName} (${seq}/${itemQty})`,
-            barcode: sequentialBarcode,
-            rfid: rfidContent,
-            success: printResult.success,
-            message: printResult.success ? `Etiqueta ${seq} impressa com sucesso` : printResult.error,
-            details: printResult.result
-          });
-          
-          console.log(`[OK] Etiqueta ${styleName} ${seq}/${itemQty} processada:`, printResult.success ? 'OK' : printResult.error);
+          if (!printResult.success) {
+            console.error(`[PRINT] [print-all] ❌ Erro ao imprimir etiqueta ${seq}/${itemQty}: ${printResult.error}`);
+            // Se o erro for de conexão, tentar reconectar e imprimir novamente uma vez
+            if (printResult.error && (printResult.error.includes('online') || printResult.error.includes('conectada') || printResult.error.includes('Network'))) {
+              console.log(`[PRINT] [print-all] Tentando reconectar e reimprimir...`);
+              try {
+                await pythonUSBIntegration.ensurePrinterName();
+                const retryResult = await pythonUSBIntegration.sendZPL(workingZPL, 'ascii', 1);
+                if (retryResult.success) {
+                  console.log(`[PRINT] [print-all] ✅ Reimpressão bem-sucedida após reconexão!`);
+                  results.push({
+                    item: `${styleName} (${seq}/${itemQty})`,
+                    barcode: sequentialBarcode,
+                    rfid: rfidContent,
+                    success: true,
+                    message: `Etiqueta ${seq} impressa com sucesso (após reconexão)`,
+                    details: retryResult.result
+                  });
+                  console.log(`[OK] Etiqueta ${styleName} ${seq}/${itemQty} processada: OK (após reconexão)`);
+                } else {
+                  throw new Error(retryResult.error || 'Erro ao reimprimir após reconexão');
+                }
+              } catch (retryError) {
+                throw new Error(`Erro de conexão com a impressora: ${retryError.message}. Verifique se a impressora está conectada e tente novamente.`);
+              }
+            } else {
+              throw new Error(printResult.error || 'Erro desconhecido ao imprimir');
+            }
+          } else {
+            results.push({
+              item: `${styleName} (${seq}/${itemQty})`,
+              barcode: sequentialBarcode,
+              rfid: rfidContent,
+              success: printResult.success,
+              message: printResult.success ? `Etiqueta ${seq} impressa com sucesso` : printResult.error,
+              details: printResult.result
+            });
+            
+            console.log(`[OK] Etiqueta ${styleName} ${seq}/${itemQty} processada:`, printResult.success ? 'OK' : printResult.error);
+          }
           
           // Aguardar um pouco entre impressões para não sobrecarregar a impressora
           // (exceto na última etiqueta)
@@ -2130,10 +3152,14 @@ app.post('/api/print-all', async (req, res) => {
           
         } catch (error) {
           console.error(`[ERRO] Erro ao processar ${item.STYLE_NAME} ${seq}/${itemQty}:`, error);
+          const errorMessage = error.message || 'Erro desconhecido';
           results.push({
             item: `${item.STYLE_NAME || 'Desconhecido'} (${seq}/${itemQty})`,
             success: false,
-            message: error.message
+            message: errorMessage,
+            error: errorMessage.includes('conexão') || errorMessage.includes('online') || errorMessage.includes('Network') 
+              ? 'Erro de conexão com a impressora. Verifique se a impressora está conectada e tente novamente.'
+              : errorMessage
           });
         }
       } // Fim do loop de sequência
@@ -2218,7 +3244,7 @@ app.post('/api/generate-labels', async (req, res) => {
   }
 });
 
-// Endpoint para salvar layout da etiqueta
+// Endpoint para salvar layout da etiqueta (DEPRECATED - usar save-template)
 app.post('/api/layout/save', (req, res) => {
   try {
     const { layout } = req.body;
@@ -2227,16 +3253,29 @@ app.post('/api/layout/save', (req, res) => {
       return res.status(400).json({ error: 'Layout não fornecido' });
     }
 
-    // Salvar layout em arquivo JSON
-    const fs = require('fs');
-    const path = require('path');
-    const layoutPath = path.join(__dirname, process.env.LAYOUT_PATH || 'label-layout.json');
+    // Salvar layout em Default.json (caminho relativo ao projeto)
+    const layoutsDir = path.join(__dirname, 'layouts');
     
-    fs.writeFileSync(layoutPath, JSON.stringify(layout, null, 2), 'utf8');
+    // Garantir que o diretório existe
+    if (!fs.existsSync(layoutsDir)) {
+      fs.mkdirSync(layoutsDir, { recursive: true });
+    }
+    
+    const layoutPath = path.join(layoutsDir, 'Default.json');
+    
+    // Salvar com estrutura completa (name, layout, timestamps)
+    const layoutData = {
+      name: 'Default',
+      layout: layout,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    
+    fs.writeFileSync(layoutPath, JSON.stringify(layoutData, null, 2), 'utf8');
     
     res.json({
       success: true,
-      message: 'Layout salvo com sucesso',
+      message: 'Layout salvo com sucesso em Default.json',
       layout: layout
     });
   } catch (error) {
@@ -2245,42 +3284,96 @@ app.post('/api/layout/save', (req, res) => {
   }
 });
 
-// Endpoint para carregar layout da etiqueta
-app.get('/api/layout/load', (req, res) => {
+// Endpoint para listar layouts disponíveis
+app.get('/api/layout/list', (req, res) => {
   try {
     const fs = require('fs');
     const path = require('path');
-    const layoutPath = path.join(__dirname, process.env.LAYOUT_PATH || 'label-layout.json');
+    const layoutsDir = path.join(__dirname, 'layouts');
     
-    let layout;
-    if (fs.existsSync(layoutPath)) {
-      const layoutData = fs.readFileSync(layoutPath, 'utf8');
-      layout = JSON.parse(layoutData);
-    } else {
-      // Layout padrão baseado no TEMPLATE_LARROUD_OFICIAL.zpl
-      layout = {
-        labelStyleName: { x: 187, y: 147, fontSize: 20 },
-        labelVpn: { x: 188, y: 176, fontSize: 20 },
-        labelColor: { x: 187, y: 204, fontSize: 20 },
-        labelSize: { x: 187, y: 234, fontSize: 20 },
-        styleName: { x: 353, y: 147, fontSize: 23 },
-        vpn: { x: 353, y: 175, fontSize: 23 },
-        color: { x: 353, y: 204, fontSize: 23 },
-        size: { x: 353, y: 232, fontSize: 23 },
-        barcode: { x: 222, y: 308, height: 39 },
-        qrLeft: { x: 77, y: 355, size: 3 },
-        qrTop: { x: 737, y: 167, size: 3 },
-        qrBottom: { x: 739, y: 355, size: 3 },
-        poInfo: { x: 701, y: 220, fontSize: 16 },
-        localInfo: { x: 680, y: 238, fontSize: 16 },
-        mainBox: { x: 31, y: 80, width: 640, height: 280 },
-        dividerLine: { x: 177, y: 81, height: 275 }
-      };
+    const layouts = [];
+    
+    if (fs.existsSync(layoutsDir)) {
+      const files = fs.readdirSync(layoutsDir);
+      files.forEach(file => {
+        if (file.endsWith('.json')) {
+          try {
+            const filePath = path.join(layoutsDir, file);
+            const fileData = fs.readFileSync(filePath, 'utf8');
+            const layoutData = JSON.parse(fileData);
+            layouts.push({
+              name: layoutData.name || file.replace('.json', ''),
+              filename: file,
+              createdAt: layoutData.createdAt,
+              updatedAt: layoutData.updatedAt
+            });
+          } catch (error) {
+            console.error(`Erro ao ler layout ${file}:`, error);
+          }
+        }
+      });
     }
     
     res.json({
       success: true,
-      layout: layout
+      layouts: layouts
+    });
+  } catch (error) {
+    console.error('Erro ao listar layouts:', error);
+    res.status(500).json({ error: 'Erro ao listar layouts' });
+  }
+});
+
+// Endpoint para carregar um layout específico por nome
+app.get('/api/layout/load/:name?', (req, res) => {
+  try {
+    const layoutName = req.params.name || 'Default';
+    
+    // Sempre usar caminho relativo ao projeto
+    const layoutsDir = path.join(__dirname, 'layouts');
+    const layoutPath = path.join(layoutsDir, `${layoutName}.json`);
+    
+    let layout;
+    if (fs.existsSync(layoutPath)) {
+      const layoutData = fs.readFileSync(layoutPath, 'utf8');
+      const layoutObj = JSON.parse(layoutData);
+      layout = layoutObj.layout || layoutObj; // Suporta ambos os formatos
+    } else {
+      // Layout padrão baseado no TEMPLATE_LARROUD_OFICIAL.zpl
+      // Coordenadas exatas do template ZPL oficial
+      layout = {
+        // Labels (textos fixos) - FT187,147, FT188,176, FT187,204, FT187,234
+        labelStyleName: { x: 187, y: 147, fontSize: 20 },
+        labelVpn: { x: 188, y: 176, fontSize: 20 },
+        labelColor: { x: 187, y: 204, fontSize: 20 },
+        labelSize: { x: 187, y: 234, fontSize: 20 },
+        // Valores (dados) - FT353,147, FT353,175, FT353,204, FT353,232
+        styleName: { x: 353, y: 147, fontSize: 23 },
+        vpn: { x: 353, y: 175, fontSize: 23 },
+        color: { x: 353, y: 204, fontSize: 23 },
+        size: { x: 353, y: 232, fontSize: 23 },
+        // QR Codes - Posicionados nas laterais para não sobrepor textos
+        // QR esquerdo: bem à esquerda, alinhado verticalmente com textos
+        qrLeft: { x: 50, y: 200, size: 4 },
+        // QR codes direitos: bem à direita, um no topo e um embaixo (dentro do MainBox)
+        qrTop: { x: 600, y: 120, size: 4 },
+        qrBottom: { x: 600, y: 300, size: 4 },
+        // PO Info - À direita, entre os QR codes, sem sobrepor textos
+        poInfo: { x: 580, y: 200, fontSize: 16 },
+        // Barcode - FT222,308
+        barcode: { x: 222, y: 308, height: 57.296875 },
+        // MainBox - FO31,80^GB640,280,3
+        mainBox: { x: 31, y: 80, width: 640, height: 280 },
+        // DividerLine - FO177,81^GB0,275,3
+        dividerLine: { x: 177, y: 81, height: 275 }
+      };
+      console.log(`[INFO] Layout "${layoutName}" não encontrado, retornando layout padrão baseado no template ZPL oficial`);
+    }
+    
+    res.json({
+      success: true,
+      layout: layout,
+      name: layoutName
     });
   } catch (error) {
     console.error('Erro ao carregar layout:', error);
@@ -2288,7 +3381,7 @@ app.get('/api/layout/load', (req, res) => {
   }
 });
 
-// Endpoint para salvar template nomeado
+// Endpoint para salvar layout em um arquivo específico
 app.post('/api/layout/save-template', (req, res) => {
   try {
     const { name, layout } = req.body;
@@ -2296,26 +3389,57 @@ app.post('/api/layout/save-template', (req, res) => {
     if (!name || !layout) {
       return res.status(400).json({ error: 'Nome e layout são obrigatórios' });
     }
-
-    const fs = require('fs');
-    const path = require('path');
-    const templatesDir = path.join(__dirname, 'layouts');
     
-    // Criar diretório de templates se não existir
-    if (!fs.existsSync(templatesDir)) {
-      fs.mkdirSync(templatesDir, { recursive: true });
+    // Garantir que layout não está aninhado (layout.layout)
+    let layoutToSave = layout;
+    if (layout && layout.layout && typeof layout.layout === 'object') {
+      console.warn('[SAVE] Layout recebido com estrutura aninhada dupla, extraindo layout interno');
+      layoutToSave = layout.layout;
     }
     
-    const templatePath = path.join(templatesDir, `${name.replace(/[^a-zA-Z0-9-_]/g, '_')}.json`);
+    // Verificar se os valores estão em dots (devem ser números grandes, não decimais pequenos)
+    // Se valores forem muito pequenos (< 10), pode estar em cm ao invés de dots
+    const sampleKey = Object.keys(layoutToSave)[0];
+    if (sampleKey && layoutToSave[sampleKey] && layoutToSave[sampleKey].x !== undefined) {
+      const sampleX = layoutToSave[sampleKey].x;
+      if (sampleX < 10 && sampleX > 0) {
+        console.warn(`[SAVE] AVISO: Valores parecem estar em cm (x=${sampleX}) ao invés de dots. Layout pode estar incorreto.`);
+      }
+    }
     
-    const templateData = {
+    // Sempre usar caminho relativo ao projeto (portável)
+    const layoutsDir = path.join(__dirname, 'layouts');
+    
+    // Garantir que o diretório existe
+    if (!fs.existsSync(layoutsDir)) {
+      fs.mkdirSync(layoutsDir, { recursive: true });
+      console.log(`[OK] Diretório layouts criado: ${layoutsDir}`);
+    }
+    
+    // Sanitizar nome do arquivo (remover caracteres inválidos)
+    const sanitizedName = name.replace(/[^a-zA-Z0-9-_]/g, '_');
+    const templatePath = path.join(layoutsDir, `${sanitizedName}.json`);
+    
+    // Ler arquivo existente se houver, para preservar createdAt
+    let templateData = {
       name: name,
-      layout: layout,
+      layout: layoutToSave,  // Usar layout sem estrutura aninhada
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
     
+    if (fs.existsSync(templatePath)) {
+      try {
+        const existingData = JSON.parse(fs.readFileSync(templatePath, 'utf8'));
+        templateData.createdAt = existingData.createdAt || templateData.createdAt;
+      } catch (error) {
+        console.warn('Não foi possível ler dados existentes, criando novo:', error);
+      }
+    }
+    
     fs.writeFileSync(templatePath, JSON.stringify(templateData, null, 2), 'utf8');
+    
+    console.log(`[OK] Layout "${name}" salvo em: ${templatePath}`);
     
     res.json({
       success: true,
@@ -2460,25 +3584,34 @@ async function generateLabelPreview(item) {
       // Tentar template alternativo ou gerar ZPL básico
       zplTemplate = `^XA
 ^PW831
-^LL376
+^LL500
 ^FO50,50^A0N,30,30^FD${styleName}^FS
 ^FO50,100^A0N,20,20^FDVPN: ${vpn}^FS
-^FO50,130^A0N,20,20^FDMATERIAL/COLOR: ${color}^FS
+^FO50,130^A0N,20,20^FDMAT./COLOR: ${color}^FS
 ^FO50,160^A0N,20,20^FDSIZE: ${size}^FS
 ^XZ`;
       console.warn("Usando template básico para preview");
     }
 
     // Carregar layout customizado (se existir) para preview também
+    // Usar Default.json do diretório layouts (portável)
     let layout = null;
     try {
-      const layoutPath = path.join(__dirname, process.env.LAYOUT_PATH || 'label-layout.json');
-      if (fs.existsSync(layoutPath)) {
-        const layoutData = fs.readFileSync(layoutPath, 'utf8');
-        layout = JSON.parse(layoutData);
+      // Sempre usar caminho relativo ao projeto
+      const layoutsDir = path.join(__dirname, 'layouts');
+      const defaultLayoutPath = path.join(layoutsDir, 'Default.json');
+      
+      if (fs.existsSync(defaultLayoutPath)) {
+        const layoutData = fs.readFileSync(defaultLayoutPath, 'utf8');
+        const layoutObj = JSON.parse(layoutData);
+        layout = layoutObj.layout || layoutObj;
+        console.log('[OK] [PREVIEW] Layout Default carregado para preview');
+        console.log('[DEBUG] [PREVIEW] Layout keys:', Object.keys(layout));
+      } else {
+        console.log('[INFO] [PREVIEW] Layout Default não encontrado, usando template sem modificações');
       }
     } catch (layoutError) {
-      console.warn('Erro ao carregar layout customizado para preview, usando padrão');
+      console.warn('Erro ao carregar layout customizado para preview, usando padrão:', layoutError.message);
     }
 
     // Aplicar layout customizado ao template se disponível
@@ -2537,18 +3670,30 @@ async function generateLabelPreview(item) {
         return match;
       });
       
-      baseTemplate = baseTemplate.replace(/FT\d+,\d+\^A0N,16,15/g, (match) => {
-        const coords = match.match(/FT(\d+),(\d+)/);
-        const x = parseInt(coords[1]);
-        const y = parseInt(coords[2]);
-        
-        if (x === layout.poInfo?.x && y === layout.poInfo?.y) {
-          return `FT${x},${y}^A0N,${layout.poInfo.fontSize || 16},${layout.poInfo.fontSize || 16}`;
-        } else if (x === layout.localInfo?.x && y === layout.localInfo?.y) {
-          return `FT${x},${y}^A0N,${layout.localInfo.fontSize || 16},${layout.localInfo.fontSize || 16}`;
-        }
-        return match;
-      });
+      // Substituir fontSize da PO e LOCAL de forma mais robusta (PREVIEW)
+      // Procurar por qualquer tamanho de fonte na posição da PO/LOCAL
+      if (layout.poInfo) {
+        const poX = layout.poInfo.x;
+        const poY = layout.poInfo.y;
+        const poFontSize = layout.poInfo.fontSize || 16;
+        // Substituir qualquer ^A0N com as coordenadas da PO (qualquer tamanho)
+        baseTemplate = baseTemplate.replace(
+          new RegExp(`FT${poX},${poY}\\^A0N,\\d+,\\d+`, 'g'),
+          `FT${poX},${poY}^A0N,${poFontSize},${poFontSize}`
+        );
+        console.log(`[OK] [PREVIEW] PO fontSize aplicado: ${poFontSize} na posição (${poX},${poY})`);
+      }
+      
+      if (layout.localInfo) {
+        const localX = layout.localInfo.x;
+        const localY = layout.localInfo.y;
+        const localFontSize = layout.localInfo.fontSize || 16;
+        // Substituir qualquer ^A0N com as coordenadas do LOCAL (qualquer tamanho)
+        baseTemplate = baseTemplate.replace(
+          new RegExp(`FT${localX},${localY}\\^A0N,\\d+,\\d+`, 'g'),
+          `FT${localX},${localY}^A0N,${localFontSize},${localFontSize}`
+        );
+      }
       
       // Ajustar retângulos/bordas no preview também
       // Retângulo principal: ^FO31,80^GB640,280,3^FS
@@ -2558,6 +3703,20 @@ async function generateLabelPreview(item) {
       // Linha divisória: ^FO177,81^GB0,275,3^FS
       baseTemplate = baseTemplate.replace(/FO177,81\^GB0,275,3/g,
         `FO${layout.dividerLine?.x || 177},${layout.dividerLine?.y || 81}^GB0,${layout.dividerLine?.height || 275},3`);
+      
+      // Aplicar altura e largura do barcode usando comando ^BY no preview também
+      if (layout.barcode?.height || layout.barcode?.width) {
+        const barcodeHeight = layout.barcode?.height 
+          ? Math.round(layout.barcode.height / 1.5) // Converter pixels para altura do módulo
+          : 39; // Padrão
+        
+        const barcodeWidth = layout.barcode?.width 
+          ? Math.max(2, Math.min(10, Math.round(layout.barcode.width / 100))) // Converter pixels para módulo (2-10)
+          : 2; // Padrão
+        
+        baseTemplate = baseTemplate.replace(/BY2,2,39/g, `BY${barcodeWidth},2,${barcodeHeight}`);
+        console.log(`[OK] [PREVIEW] Barcode aplicado: largura=${layout.barcode.width || 'padrão'}px -> módulo w=${barcodeWidth}, altura=${layout.barcode.height || 'padrão'}px -> módulo h=${barcodeHeight}`);
+      }
     }
     
     // Usar PO e LOCAL do item (do CSV), não valores hardcoded
@@ -2565,160 +3724,206 @@ async function generateLabelPreview(item) {
     const previewLocalNumber2 = ''; // LOCAL ignorado
     const poFormatted = `PO${previewPoNumber2}`;
     
-    // Verificar se há IMAGE_URL do CSV (imagem do QR code) para usar no preview também
-    const imageUrl = item.IMAGE_URL || item['IMAGE_URL'] || '';
-    let qrImageZPL = null;
-    let useImageForQR = false;
+    // Processar imagem do sapato para posição separada (layout.image ou layout.productImage) no preview
+    // A imagem SEMPRE será pega da API Python (não de outras fontes)
+    // MANTER OS QR CODES - não substituir pelas imagens
+    const imageUrl = item.IMAGE_URL || item['IMAGE_URL'] || item.image_url || item['image_url'] || '';
+    let shoeImageZPL = null;
+    
+    // Usar layout.image ou layout.productImage (productImage está em cm, converter para dots)
+    // 1 cm = 80 dots (203 DPI)
+    const imageLayout = layout?.image || layout?.productImage;
+    let imageX = 50;
+    let imageY = 70;
+    let imageWidth = 160;
+    let imageHeight = 160;
+    
+    if (imageLayout) {
+      // TODOS os outros elementos do layout usam DOTS diretamente (valores como 195, 354, 58, etc.)
+      // Verificar se productImage também está em dots ou em cm:
+      const absX = Math.abs(imageLayout.x || 0);
+      const absY = Math.abs(imageLayout.y || 0);
+      const absWidth = Math.abs(imageLayout.width || 0);
+      const absHeight = Math.abs(imageLayout.height || 0);
+      
+      const hasSmallValues = absWidth < 20 && absHeight < 20 && absX < 20 && absY < 20;
+      const hasNegativeValues = (imageLayout.x && imageLayout.x < 0) || (imageLayout.y && imageLayout.y < 0);
+      const hasLargeValues = absWidth > 50 || absHeight > 50 || absX > 50 || absY > 50;
+      
+      const isInDots = hasLargeValues || hasNegativeValues || !hasSmallValues;
+      const aspectRatio = absWidth && absHeight ? absWidth / absHeight : 1;
+      const isDistorted = aspectRatio > 10 || aspectRatio < 0.1;
+      
+      if (isInDots) {
+        imageX = imageLayout.x || 50;
+        imageY = imageLayout.y || 70;
+        imageWidth = absWidth || 160;
+        imageHeight = absHeight || 160;
+        
+        if (imageX < 0) {
+          console.warn(`[IMAGE] [PREVIEW] ⚠️ Posição X negativa detectada (${imageX}). Ajustando para 50.`);
+          imageX = 50;
+        }
+        if (imageY < 0) {
+          console.warn(`[IMAGE] [PREVIEW] ⚠️ Posição Y negativa detectada (${imageY}). Ajustando para 70.`);
+          imageY = 70;
+        }
+        
+        console.log(`[IMAGE] [PREVIEW] Layout productImage detectado (em dots, mesma unidade dos outros elementos): posição (${imageX}, ${imageY}), tamanho ${imageWidth}x${imageHeight} dots`);
+      } else if (isDistorted) {
+        console.warn(`[IMAGE] [PREVIEW] ⚠️ Layout com proporção muito distorcida detectada (${imageLayout.width}x${imageLayout.height}, ratio=${aspectRatio.toFixed(2)}). Usando tamanho padrão 160x160 dots.`);
+        imageWidth = 160;
+        imageHeight = 160;
+        imageX = imageLayout.x ? (hasSmallValues ? Math.round(imageLayout.x * 80) : imageLayout.x) : 50;
+        imageY = imageLayout.y ? (hasSmallValues ? Math.round(imageLayout.y * 80) : imageLayout.y) : 70;
+        if (imageX < 0) imageX = 50;
+        if (imageY < 0) imageY = 70;
+      } else {
+        imageWidth = Math.round((absWidth || 2) * 80);
+        imageHeight = Math.round((absHeight || 2) * 80);
+        imageX = Math.round((imageLayout.x || 0) * 80);
+        imageY = Math.round((imageLayout.y || 0) * 80);
+        console.log(`[IMAGE] [PREVIEW] Layout productImage detectado (em cm): ${imageLayout.width}x${imageLayout.height} -> convertido para ${imageWidth}x${imageHeight} dots`);
+      }
+      
+      if (imageWidth < 80 || imageHeight < 80) {
+        console.warn(`[IMAGE] [PREVIEW] ⚠️ Tamanho muito pequeno detectado: ${imageWidth}x${imageHeight} dots. Aplicando tamanho mínimo de 80x80 dots.`);
+        imageWidth = Math.max(80, imageWidth);
+        imageHeight = Math.max(80, imageHeight);
+      }
+      
+      if (imageWidth > 400 || imageHeight > 400) {
+        console.warn(`[IMAGE] [PREVIEW] ⚠️ Tamanho muito grande detectado: ${imageWidth}x${imageHeight} dots. Limitando para 400x400 dots máximo.`);
+        const maxDim = Math.max(imageWidth, imageHeight);
+        const scale = 400 / maxDim;
+        imageWidth = Math.round(imageWidth * scale);
+        imageHeight = Math.round(imageHeight * scale);
+      }
+      
+      if (imageX < 0) imageX = 50;
+      if (imageY < 0) imageY = 70;
+      if (imageX + imageWidth > 831) {
+        console.warn(`[IMAGE] [PREVIEW] ⚠️ Imagem ultrapassa largura da etiqueta (${imageX + imageWidth} > 831). Ajustando posição X.`);
+        imageX = Math.max(0, 831 - imageWidth);
+      }
+      if (imageY + imageHeight > 500) {
+        console.warn(`[IMAGE] [PREVIEW] ⚠️ Imagem ultrapassa altura da etiqueta (${imageY + imageHeight} > 500). Ajustando posição Y.`);
+        imageY = Math.max(0, 500 - imageHeight);
+      }
+    }
+    
+    console.log(`[IMAGE] [PREVIEW] Posição final: (${imageX}, ${imageY}), Tamanho: ${imageWidth}x${imageHeight} dots`);
     
     if (imageUrl && imageUrl.trim() !== '') {
       try {
-        console.log(`[IMAGE] [PREVIEW] Usando IMAGE_URL do CSV: ${imageUrl}`);
-        // Tamanho fixo: 1.0 cm x 1.0 cm = 80 x 80 dots (203 DPI)
-        // Mesmo tamanho para preview e impressão física
-        const qrWidth = 80;  // 1.0 cm fixo
-        const qrHeight = 80; // 1.0 cm fixo
-        qrImageZPL = await convertImageToZPL(imageUrl, qrWidth, qrHeight);
-        useImageForQR = true;
-        console.log(`[OK] [PREVIEW] Imagem do QR code convertida para ZPL`);
-        console.log(`   [SIZE] [PREVIEW] Tamanho fixo: ${qrWidth}x${qrHeight} dots = ${(qrWidth/203*2.54).toFixed(2)}cm x ${(qrHeight/203*2.54).toFixed(2)}cm`);
-        console.log(`   [INFO] [PREVIEW] QR code com tamanho fixo de 1.0 cm (80x80 dots) tanto no preview quanto na impressão`);
-        console.log(`   [DEBUG] [PREVIEW] Comando ZPL gerado (primeiros 100 chars): ${qrImageZPL ? qrImageZPL.substring(0, 100) : 'null'}`);
+        // Validar que a imagem vem da API Python
+        const isFromPythonAPI = imageUrl.includes('/image/reference/') || imageUrl.includes('127.0.0.1') || imageUrl.includes('localhost');
+        if (!isFromPythonAPI) {
+          console.warn(`[IMAGE] [PREVIEW] ⚠️ Aviso: URL da imagem não parece ser da API Python: ${imageUrl}`);
+          console.warn(`[IMAGE] [PREVIEW] ⚠️ Continuando mesmo assim, mas a imagem deveria sempre vir da API Python`);
+        } else {
+          console.log(`[IMAGE] [PREVIEW] ✅ Confirmado: Imagem vem da API Python: ${imageUrl}`);
+        }
+        
+        console.log(`[IMAGE] [PREVIEW] Processando imagem do sapato para posição separada: ${imageUrl}`);
+        
+        // Converter imagem para ZPL usando tamanho do layout
+        // A imagem sempre vem da API Python
+        shoeImageZPL = await convertImageToZPL(imageUrl, imageWidth, imageHeight);
+        
+        if (shoeImageZPL && shoeImageZPL.trim() !== '') {
+          console.log(`[IMAGE] [PREVIEW] ✅ Imagem do sapato convertida para ZPL com sucesso!`);
+          console.log(`   [SIZE] [PREVIEW] Tamanho aplicado: ${imageWidth}x${imageHeight} dots`);
+          console.log(`   [DEBUG] [PREVIEW] Comando ZPL (primeiros 200 chars): ${shoeImageZPL.substring(0, 200)}...`);
+          console.log(`   [DEBUG] [PREVIEW] Comando ZPL contém ^GFA: ${shoeImageZPL.includes('^GFA')}`);
+          
+          // Inserir imagem do sapato na posição do layout.image
+          // Procurar por placeholder {IMAGE} ou inserir na posição especificada
+          if (baseTemplate.includes('{IMAGE}')) {
+            const beforeReplace = baseTemplate;
+            baseTemplate = baseTemplate.replace(/{IMAGE}/g, `^FO${imageX},${imageY}${shoeImageZPL}`);
+            if (baseTemplate !== beforeReplace) {
+              console.log(`[IMAGE] [PREVIEW] ✅ Imagem inserida no placeholder {IMAGE} na posição (${imageX}, ${imageY})`);
+              console.log(`[IMAGE] [DEBUG] [PREVIEW] Template após inserção contém ^GFA: ${baseTemplate.includes('^GFA')}`);
+            } else {
+              console.warn(`[IMAGE] [PREVIEW] ⚠️ Placeholder {IMAGE} não foi substituído`);
+            }
+          } else {
+            // Inserir imagem na posição do layout.image
+            // O template pode ter múltiplos ^XA (um para config, outro para a etiqueta)
+            // Inserir após o SEGUNDO ^XA (que é o início real da etiqueta)
+            const imageCommand = `^FO${imageX},${imageY}${shoeImageZPL}`;
+            console.log(`[IMAGE] [DEBUG] [PREVIEW] Comando completo a inserir (primeiros 200 chars): ${imageCommand.substring(0, 200)}...`);
+            
+            // Contar quantos ^XA existem no template
+            const xaMatches = baseTemplate.match(/\^XA/g);
+            const xaCount = xaMatches ? xaMatches.length : 0;
+            console.log(`[IMAGE] [DEBUG] [PREVIEW] Template contém ${xaCount} comandos ^XA`);
+            
+            // Se houver múltiplos ^XA, inserir após o segundo (início da etiqueta)
+            // Se houver apenas um, inserir após ele
+            let beforeReplace = baseTemplate;
+            if (xaCount >= 2) {
+              // Inserir após o segundo ^XA (pular o primeiro que é configuração)
+              let xaIndex = 0;
+              baseTemplate = baseTemplate.replace(/\^XA/g, (match, offset) => {
+                xaIndex++;
+                if (xaIndex === 2) {
+                  // Este é o segundo ^XA - inserir imagem após ele
+                  return `${match}\n${imageCommand}`;
+                }
+                return match;
+              });
+            } else {
+              // Apenas um ^XA - inserir após ele
+              baseTemplate = baseTemplate.replace(/^XA/m, `^XA\n${imageCommand}`);
+            }
+            
+            if (baseTemplate !== beforeReplace) {
+              console.log(`[IMAGE] [PREVIEW] ✅ Imagem inserida na posição (${imageX}, ${imageY})`);
+              console.log(`[IMAGE] [DEBUG] [PREVIEW] Template após inserção contém ^GFA: ${baseTemplate.includes('^GFA')}`);
+              console.log(`[IMAGE] [DEBUG] [PREVIEW] Template após inserção contém ^FO${imageX},${imageY}: ${baseTemplate.includes(`^FO${imageX},${imageY}`)}`);
+              
+              // Verificar se o comando completo está presente
+              const fullCommand = `^FO${imageX},${imageY}${shoeImageZPL}`;
+              if (baseTemplate.includes(fullCommand.substring(0, 50))) {
+                console.log(`[IMAGE] [DEBUG] [PREVIEW] ✅ Comando completo encontrado no template`);
+              } else {
+                console.warn(`[IMAGE] [DEBUG] [PREVIEW] ⚠️ Comando completo não encontrado no template`);
+              }
+            } else {
+              console.warn(`[IMAGE] [PREVIEW] ⚠️ Não foi possível inserir imagem após ^XA - padrão não encontrado`);
+              // Tentar inserir no final do template antes do último ^XZ
+              if (baseTemplate.includes('^XZ')) {
+                // Pegar o último ^XZ (antes do fechamento final)
+                const lastXZIndex = baseTemplate.lastIndexOf('^XZ');
+                if (lastXZIndex !== -1) {
+                  baseTemplate = baseTemplate.substring(0, lastXZIndex) + `${imageCommand}\n^XZ` + baseTemplate.substring(lastXZIndex + 3);
+                  console.log(`[IMAGE] [PREVIEW] ✅ Imagem inserida antes do último ^XZ como fallback`);
+                }
+              }
+            }
+          }
+        } else {
+          console.warn(`[AVISO] [PREVIEW] convertImageToZPL retornou vazio para imagem do sapato`);
+        }
       } catch (imageError) {
-        console.warn(`[AVISO] [PREVIEW] Erro ao converter imagem do IMAGE_URL, usando QR code gerado: ${imageError.message}`);
-        useImageForQR = false;
+        console.error(`[ERRO] [PREVIEW] Erro ao processar imagem do sapato: ${imageError.message}`);
+        console.warn(`[AVISO] [PREVIEW] Continuando sem imagem do sapato`);
       }
+    } else {
+      console.log(`[IMAGE] [PREVIEW] IMAGE_URL não disponível, pulando inserção de imagem do sapato`);
     }
     
-    // Buscar QR codes externos (se disponíveis e não houver IMAGE_URL)
-    let qrData1 = vpn; // Padrão: usar VPN
+    // QR codes: SEMPRE gerar com dados da VPN
+    // Os QR codes são gerados automaticamente pelo comando ^BQN do ZPL usando os dados da VPN
+    let qrData1 = vpn;
     let qrData2 = vpn;
     let qrData3 = vpn;
+    console.log(`[QR] [PREVIEW] ✅ QR codes serão gerados com dados VPN: "${vpn}"`);
+    console.log(`[QR] [PREVIEW] Os QR codes serão renderizados pelo comando ^BQN do ZPL usando {QR_DATA_1}, {QR_DATA_2}, {QR_DATA_3}`);
     
-    if (!useImageForQR) {
-      try {
-        const qrCodeResult = qrCodeFinder.findQRCode(previewPoNumber2, styleName);
-        if (qrCodeResult && qrCodeResult.qrCode) {
-          qrData1 = qrCodeResult.qrCode;
-          qrData2 = qrCodeResult.qrCode;
-          qrData3 = qrCodeResult.qrCode;
-          console.log(`[OK] [PREVIEW] QR Code externo encontrado: ${qrCodeResult.fileName}`);
-        }
-      } catch (qrError) {
-        console.warn(`[AVISO] [PREVIEW] Erro ao buscar QR code externo:`, qrError.message);
-      }
-    }
-    
-    // Se usar imagem do IMAGE_URL, substituir os comandos ^BQN ANTES de substituir variáveis
-    if (useImageForQR && qrImageZPL) {
-      // Obter coordenadas dos QR codes do layout ou usar padrão do template
-      const qrLeftX = layout?.qrLeft?.x || 77;
-      const qrLeftY = layout?.qrLeft?.y || 355;
-      const qrTopX = layout?.qrTop?.x || 737;
-      const qrTopY = layout?.qrTop?.y || 167;
-      const qrBottomX = layout?.qrBottom?.x || 739;
-      const qrBottomY = layout?.qrBottom?.y || 355;
-      
-      console.log(`[DEBUG] [PREVIEW] Tentando substituir QR codes por imagem do IMAGE_URL`);
-      console.log(`[DEBUG] [PREVIEW] Coordenadas: Left(${qrLeftX},${qrLeftY}), Top(${qrTopX},${qrTopY}), Bottom(${qrBottomX},${qrBottomY})`);
-      console.log(`[DEBUG] [PREVIEW] Comando ZPL a inserir: ${qrImageZPL.substring(0, 100)}...`);
-      
-      // Verificar se o template contém os padrões antes de substituir
-      const hasLeftQR = baseTemplate.includes(`FT${qrLeftX},${qrLeftY}^BQN`);
-      const hasTopQR = baseTemplate.includes(`FT${qrTopX},${qrTopY}^BQN`);
-      const hasBottomQR = baseTemplate.includes(`FT${qrBottomX},${qrBottomY}^BQN`);
-      
-      console.log(`[DEBUG] [PREVIEW] QR codes encontrados no template: Left=${hasLeftQR}, Top=${hasTopQR}, Bottom=${hasBottomQR}`);
-      
-      // Substituir cada QR code (^BQN) pela imagem (^GF) no template ANTES de substituir variáveis
-      // IMPORTANTE: ^GF (Graphic Field) precisa de ^FO (Field Origin), não ^FT (Field Text)
-      // O template tem formato:
-      // ^FTx,y^BQN,2,3
-      // ^FH\^FDLA,{QR_DATA_X}^FS
-      // Precisamos capturar desde ^FT até ^FS incluindo a quebra de linha
-      
-      let replacements = 0;
-      
-      // Padrão mais robusto: captura desde ^FT até ^FS, incluindo qualquer coisa no meio (quebras de linha, espaços, etc)
-      // Usar [\s\S]*? para capturar qualquer caractere (incluindo quebras de linha) de forma não-gulosa
-      const patternLeft = new RegExp(`\\^FT${qrLeftX},${qrLeftY}\\^BQN[\\s\\S]*?\\^FH\\\\\\^FDLA,\\{QR_DATA_3\\}\\^FS`, 'g');
-      const patternTop = new RegExp(`\\^FT${qrTopX},${qrTopY}\\^BQN[\\s\\S]*?\\^FH\\\\\\^FDLA,\\{QR_DATA_1\\}\\^FS`, 'g');
-      const patternBottom = new RegExp(`\\^FT${qrBottomX},${qrBottomY}\\^BQN[\\s\\S]*?\\^FH\\\\\\^FDLA,\\{QR_DATA_2\\}\\^FS`, 'g');
-      
-      // Verificar se os padrões existem antes de substituir
-      const matchLeft = baseTemplate.match(patternLeft);
-      const matchTop = baseTemplate.match(patternTop);
-      const matchBottom = baseTemplate.match(patternBottom);
-      
-      console.log(`[DEBUG] [PREVIEW] Padrões encontrados: Left=${!!matchLeft}, Top=${!!matchTop}, Bottom=${!!matchBottom}`);
-      if (matchLeft) console.log(`[DEBUG] [PREVIEW] Match Left (primeiros 100 chars): ${matchLeft[0].substring(0, 100)}`);
-      if (matchTop) console.log(`[DEBUG] [PREVIEW] Match Top (primeiros 100 chars): ${matchTop[0].substring(0, 100)}`);
-      if (matchBottom) console.log(`[DEBUG] [PREVIEW] Match Bottom (primeiros 100 chars): ${matchBottom[0].substring(0, 100)}`);
-      
-      // Substituir cada padrão encontrado
-      if (matchLeft) {
-        baseTemplate = baseTemplate.replace(patternLeft, `^FO${qrLeftX},${qrLeftY}${qrImageZPL}`);
-        replacements++;
-        console.log(`[OK] [PREVIEW] QR Left substituído - removido ${matchLeft[0].length} caracteres`);
-      }
-      if (matchTop) {
-        baseTemplate = baseTemplate.replace(patternTop, `^FO${qrTopX},${qrTopY}${qrImageZPL}`);
-        replacements++;
-        console.log(`[OK] [PREVIEW] QR Top substituído - removido ${matchTop[0].length} caracteres`);
-      }
-      if (matchBottom) {
-        baseTemplate = baseTemplate.replace(patternBottom, `^FO${qrBottomX},${qrBottomY}${qrImageZPL}`);
-        replacements++;
-        console.log(`[OK] [PREVIEW] QR Bottom substituído - removido ${matchBottom[0].length} caracteres`);
-      }
-      
-      // Se nenhum padrão foi encontrado, tentar padrão genérico mais simples
-      if (replacements === 0) {
-        console.log(`[AVISO] [PREVIEW] Nenhum padrão específico encontrado, tentando padrão genérico...`);
-        
-        // Padrão genérico: capturar qualquer ^BQN seguido de qualquer coisa até ^FS nas coordenadas
-        const genericPatternLeft = new RegExp(`\\^FT${qrLeftX},${qrLeftY}\\^BQN[\\s\\S]*?\\^FS`, 'g');
-        const genericPatternTop = new RegExp(`\\^FT${qrTopX},${qrTopY}\\^BQN[\\s\\S]*?\\^FS`, 'g');
-        const genericPatternBottom = new RegExp(`\\^FT${qrBottomX},${qrBottomY}\\^BQN[\\s\\S]*?\\^FS`, 'g');
-        
-        if (baseTemplate.match(genericPatternLeft)) {
-          baseTemplate = baseTemplate.replace(genericPatternLeft, `^FO${qrLeftX},${qrLeftY}${qrImageZPL}`);
-          replacements++;
-          console.log(`[OK] [PREVIEW] QR Left substituído (padrão genérico)`);
-        }
-        if (baseTemplate.match(genericPatternTop)) {
-          baseTemplate = baseTemplate.replace(genericPatternTop, `^FO${qrTopX},${qrTopY}${qrImageZPL}`);
-          replacements++;
-          console.log(`[OK] [PREVIEW] QR Top substituído (padrão genérico)`);
-        }
-        if (baseTemplate.match(genericPatternBottom)) {
-          baseTemplate = baseTemplate.replace(genericPatternBottom, `^FO${qrBottomX},${qrBottomY}${qrImageZPL}`);
-          replacements++;
-          console.log(`[OK] [PREVIEW] QR Bottom substituído (padrão genérico)`);
-        }
-      }
-      
-      console.log(`[OK] [PREVIEW] Total de substituições: ${replacements}/3`);
-      console.log(`[OK] [PREVIEW] QR codes substituídos pela imagem do IMAGE_URL`);
-      
-      // Debug: verificar se ainda há ^BQN no template após substituição
-      const remainingBQN = (baseTemplate.match(/\^BQN/g) || []).length;
-      console.log(`[DEBUG] [PREVIEW] Comandos ^BQN restantes no template: ${remainingBQN}`);
-      
-      if (remainingBQN > 0) {
-        console.warn(`[AVISO] [PREVIEW] Ainda há ${remainingBQN} comandos ^BQN no template! Eles podem estar sendo renderizados em cima da imagem.`);
-        // Tentar remover qualquer ^BQN restante nas coordenadas específicas
-        const finalCleanupLeft = new RegExp(`\\^FT${qrLeftX},${qrLeftY}\\^BQN[^\\^]*`, 'g');
-        const finalCleanupTop = new RegExp(`\\^FT${qrTopX},${qrTopY}\\^BQN[^\\^]*`, 'g');
-        const finalCleanupBottom = new RegExp(`\\^FT${qrBottomX},${qrBottomY}\\^BQN[^\\^]*`, 'g');
-        
-        baseTemplate = baseTemplate.replace(finalCleanupLeft, '');
-        baseTemplate = baseTemplate.replace(finalCleanupTop, '');
-        baseTemplate = baseTemplate.replace(finalCleanupBottom, '');
-        
-        const remainingAfterCleanup = (baseTemplate.match(/\^BQN/g) || []).length;
-        console.log(`[DEBUG] [PREVIEW] Comandos ^BQN após limpeza final: ${remainingAfterCleanup}`);
-      }
-    }
+    // Código antigo que substituía QR codes removido - agora mantemos ambos (QR codes + imagem do sapato)
     
     // Substituir variáveis do template com dados reais
     const zplCode = baseTemplate
@@ -2738,31 +3943,26 @@ async function generateLabelPreview(item) {
       .replace(/{RFID_DATA}/g, '000000000000000000000000')
       .replace(/{RFID_STATUS}/g, 'OK');
 
-    // Debug: verificar se o comando ^GFA está no ZPL final
+    // Debug: verificar se o comando ^GFA está no ZPL final (imagem do sapato)
     const hasGFA = zplCode.includes('^GFA');
     const hasFO = zplCode.includes('^FO');
-    console.log(`[DEBUG] [PREVIEW] ZPL final contém ^GFA: ${hasGFA}, contém ^FO: ${hasFO}`);
+    const hasBQN = zplCode.includes('^BQN');
+    console.log(`[DEBUG] [PREVIEW] ZPL final contém ^GFA (imagem): ${hasGFA}, contém ^FO: ${hasFO}, contém ^BQN (QR codes): ${hasBQN}`);
     
-    if (useImageForQR && qrImageZPL) {
-      // Verificar se o comando ^GFA está presente nas coordenadas esperadas
-      const qrLeftX = layout?.qrLeft?.x || 77;
-      const qrLeftY = layout?.qrLeft?.y || 355;
-      const qrTopX = layout?.qrTop?.x || 737;
-      const qrTopY = layout?.qrTop?.y || 167;
-      const qrBottomX = layout?.qrBottom?.x || 739;
-      const qrBottomY = layout?.qrBottom?.y || 355;
-      
-      const hasLeftGFA = zplCode.includes(`^FO${qrLeftX},${qrLeftY}`);
-      const hasTopGFA = zplCode.includes(`^FO${qrTopX},${qrTopY}`);
-      const hasBottomGFA = zplCode.includes(`^FO${qrBottomX},${qrBottomY}`);
-      
-      console.log(`[DEBUG] [PREVIEW] Comandos ^FO encontrados no ZPL final: Left=${hasLeftGFA}, Top=${hasTopGFA}, Bottom=${hasBottomGFA}`);
-      
-      if (!hasLeftGFA && !hasTopGFA && !hasBottomGFA) {
-        console.warn(`[AVISO] [PREVIEW] Nenhum comando ^FO encontrado no ZPL final! A substituição pode ter falhado.`);
-        console.log(`[DEBUG] [PREVIEW] Amostra do ZPL nas coordenadas esperadas:`);
-        console.log(`   Left (${qrLeftX},${qrLeftY}): ${zplCode.substring(zplCode.indexOf(`FT${qrLeftX},${qrLeftY}`) || 0, (zplCode.indexOf(`FT${qrLeftX},${qrLeftY}`) || 0) + 100)}`);
-      }
+    // Verificar se a imagem do sapato foi inserida corretamente
+    if (shoeImageZPL && layout?.image) {
+      const imageX = layout.image.x || 50;
+      const imageY = layout.image.y || 70;
+      const hasImageAtPosition = zplCode.includes(`^FO${imageX},${imageY}`);
+      console.log(`[DEBUG] [PREVIEW] Imagem do sapato na posição (${imageX}, ${imageY}): ${hasImageAtPosition ? '✅ Encontrada' : '⚠️ Não encontrada'}`);
+    }
+    
+    // Verificar se os QR codes estão presentes
+    if (layout?.qrLeft) {
+      const qrLeftX = layout.qrLeft.x || 77;
+      const qrLeftY = layout.qrLeft.y || 355;
+      const hasQRLeft = zplCode.includes(`FT${qrLeftX},${qrLeftY}^BQN`) || zplCode.includes(`^FT${qrLeftX},${qrLeftY}`);
+      console.log(`[DEBUG] [PREVIEW] QR code esquerdo na posição (${qrLeftX}, ${qrLeftY}): ${hasQRLeft ? '✅ Encontrado' : '⚠️ Não encontrado'}`);
     }
     
     console.log("ZPL gerado para preview usando template ^FN:", zplCode.substring(0, 200) + "...");
@@ -2838,7 +4038,7 @@ function generateLabelZPL(item) {
 ^FO20,105^A0N,14,14^FDVPN:^FS
 ^FO70,105^A0N,14,14^FD${vpn}^FS
 
-^FO20,125^A0N,14,14^FDMATERIAL/COLOR:^FS
+^FO20,125^A0N,14,14^FDMAT./COLOR:^FS
 ^FO110,125^A0N,14,14^FD${color}^FS
 ^FO400,125^A0N,14,14^FDSIZE:^FS
 ^FO450,125^A0N,14,14^FD${size}^FS
@@ -2899,7 +4099,7 @@ async function generateLabelPDF(item) {
     color: rgb(0, 0, 0)
   });
   
-  page.drawText(`MATERIAL / COLOR: ${String(item.DESCRIPTION || item.COLOR || 'N/A')}`, {
+  page.drawText(`MAT. / COLOR: ${String(item.DESCRIPTION || item.COLOR || 'N/A')}`, {
     x: 65,
     y: height - 55,
     size: 10,
@@ -5199,10 +6399,34 @@ app.get('/api/mupa/info', (req, res) => {
 // Importar módulo de processamento CSV
 // Endpoints CSV removidos - funcionalidade duplicada, usar /api/upload-excel e /api/print-individual
 
-// Tratamento de erros
+// Tratamento de erros global (deve ser o último middleware)
 app.use((error, req, res, next) => {
-  console.error('Erro:', error);
-  res.status(500).json({ error: 'Erro interno do servidor' });
+  console.error('[ERROR-HANDLER] Erro capturado:', error.message);
+  console.error('[ERROR-HANDLER] Stack:', error.stack);
+  console.error('[ERROR-HANDLER] URL:', req.url);
+  console.error('[ERROR-HANDLER] Method:', req.method);
+  
+  // Garantir que a resposta não foi enviada ainda
+  if (!res.headersSent) {
+    res.status(500).json({ 
+      error: 'Erro interno do servidor',
+      message: process.env.NODE_ENV === 'development' ? error.message : 'Erro interno do servidor',
+      timestamp: new Date().toISOString()
+    });
+  } else {
+    console.warn('[ERROR-HANDLER] ⚠️ Resposta já foi enviada, não é possível enviar erro');
+  }
+});
+
+// Middleware para capturar erros em requisições não tratadas
+app.use((req, res, next) => {
+  // Garantir que todas as requisições tenham timeout
+  req.setTimeout(30000, () => {
+    if (!res.headersSent) {
+      res.status(408).json({ error: 'Request timeout' });
+    }
+  });
+  next();
 });
 
 // Iniciar servidor com tratamento de erros robusto
@@ -5211,43 +6435,285 @@ console.log(`[STARTUP] PORT=${PORT}`);
 console.log(`[STARTUP] NODE_ENV=${process.env.NODE_ENV || 'not set'}`);
 
 let server;
-try {
-  server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ Servidor rodando na porta ${PORT}`);
-    console.log(`✅ Servidor escutando em 0.0.0.0:${PORT}`);
-    console.log(`✅ Health check disponível em http://0.0.0.0:${PORT}/health`);
-  });
 
-  server.on('error', (error) => {
+// Função para verificar e limpar porta antes de iniciar
+function checkAndClearPort(port) {
+  const { execSync } = require('child_process');
+  
+  try {
+    if (process.platform === 'win32') {
+      try {
+        const portCheck = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { 
+          encoding: 'utf8', 
+          stdio: 'pipe' 
+        });
+        
+        if (portCheck && portCheck.trim()) {
+          console.log(`[STARTUP] ⚠️ Porta ${port} em uso, tentando liberar...`);
+          const lines = portCheck.trim().split('\n');
+          for (const line of lines) {
+            const parts = line.trim().split(/\s+/);
+            const pid = parts[parts.length - 1];
+            if (pid && !isNaN(pid)) {
+              try {
+                execSync(`taskkill /PID ${pid} /F`, { encoding: 'utf8', stdio: 'pipe' });
+                console.log(`[STARTUP] ✅ Processo ${pid} encerrado`);
+              } catch (killError) {
+                // Ignorar erros ao tentar encerrar processo
+              }
+            }
+          }
+          // Aguardar um pouco para a porta ser liberada (usar setTimeout seria melhor, mas como é síncrono, usar pequeno delay)
+          require('child_process').execSync('timeout /t 2 /nobreak >nul 2>&1', { stdio: 'pipe' });
+        }
+      } catch (e) {
+        // Porta não está em uso, continuar normalmente
+      }
+    } else {
+      // Linux/Mac: usar lsof
+      try {
+        const portCheck = execSync(`lsof -ti:${port}`, { encoding: 'utf8', stdio: 'pipe' });
+        if (portCheck && portCheck.trim()) {
+          console.log(`[STARTUP] ⚠️ Porta ${port} em uso, tentando liberar...`);
+          const pids = portCheck.trim().split('\n');
+          for (const pid of pids) {
+            if (pid && !isNaN(pid)) {
+              try {
+                execSync(`kill -9 ${pid}`, { encoding: 'utf8', stdio: 'pipe' });
+                console.log(`[STARTUP] ✅ Processo ${pid} encerrado`);
+              } catch (killError) {
+                // Ignorar erros
+              }
+            }
+          }
+          // Aguardar um pouco (Linux/Mac)
+          require('child_process').execSync('sleep 2', { stdio: 'pipe' });
+        }
+      } catch (e) {
+        // Porta não está em uso
+      }
+    }
+  } catch (error) {
+    console.log(`[STARTUP] ⚠️ Erro ao verificar porta ${port}: ${error.message}`);
+  }
+}
+
+// Função para iniciar o servidor
+function startServer() {
+  // Verificar e limpar porta antes de iniciar
+  checkAndClearPort(PORT);
+  try {
+    server = app.listen(PORT, '0.0.0.0', () => {
+      console.log(`✅ Servidor rodando na porta ${PORT}`);
+      console.log(`✅ Servidor escutando em 0.0.0.0:${PORT}`);
+      console.log(`✅ Health check disponível em http://0.0.0.0:${PORT}/health`);
+    });
+
+    server.on('listening', () => {
+      console.log('✅ Servidor está escutando!');
+      console.log('[STARTUP] Servidor iniciado com sucesso e pronto para receber requisições');
+    });
+    
+    // Tratar erros do servidor de forma mais robusta (não encerrar o processo)
+    server.on('error', (error) => {
+      console.error('❌ Erro no servidor HTTP:', error.message);
+      console.error('❌ Stack:', error.stack);
+      
+      // Se for erro de porta em uso, tentar limpar e reiniciar
+      if (error.code === 'EADDRINUSE') {
+        console.log('[SERVER] Tentando limpar porta e reiniciar...');
+        checkAndClearPort(PORT);
+        // Não tentar reiniciar automaticamente - deixar o nodemon fazer isso
+      }
+      
+      // Não encerrar o processo imediatamente - deixar o nodemon gerenciar
+      // Apenas logar o erro e continuar
+    });
+    
+    // Tratar erros de conexão do cliente (não devem derrubar o servidor)
+    server.on('clientError', (error, socket) => {
+      console.warn('[SERVER] ⚠️ Erro de cliente HTTP:', error.message);
+      // Fechar a conexão do cliente, mas não derrubar o servidor
+      if (socket.writable) {
+        socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+      }
+    });
+    
+    // Configurar timeout do servidor para evitar conexões penduradas
+    server.keepAliveTimeout = 65000; // 65 segundos
+    server.headersTimeout = 66000; // 66 segundos (deve ser maior que keepAliveTimeout)
+  } catch (error) {
     console.error('❌ Erro ao iniciar servidor:', error);
-    console.error('❌ Stack:', error.stack);
     process.exit(1);
-  });
+  }
+}
 
-  server.on('listening', () => {
-    console.log('✅ Servidor está escutando!');
-  });
+// Iniciar API Python Image Proxy ANTES do servidor iniciar
+(async () => {
+  try {
+    if (imageProxyStarter && process.env.AUTO_START_IMAGE_PROXY !== 'false') {
+      console.log('[STARTUP] Iniciando API Python Image Proxy antes do servidor...');
+      
+      // Iniciar API Python com tratamento de erro robusto
+      try {
+        await imageProxyStarter.startImageProxy();
+        console.log('[STARTUP] ✅ API Python Image Proxy iniciada com sucesso');
+      } catch (proxyError) {
+        console.error('[STARTUP] ⚠️ Erro ao iniciar API Python:', proxyError.message);
+        console.warn('[STARTUP] Continuando sem API Python (pode ser iniciada manualmente depois)');
+      }
+      
+      // Usar a porta detectada pelo starter (se disponível) ou tentar detectar automaticamente
+      const detectedPort = process.env._IMAGE_PROXY_ACTUAL_PORT || process.env.IMAGE_PROXY_PORT || '8000';
+      const imageProxyUrl = process.env.IMAGE_PROXY_URL || `http://127.0.0.1:${detectedPort}`;
+      
+      console.log(`[STARTUP] Tentando conectar na API Python em ${imageProxyUrl}...`);
+      
+      // Aguardar até 10 segundos para a API estar pronta
+      let attempts = 0;
+      const maxAttempts = 20; // 20 tentativas de 500ms = 10 segundos
+      let apiReady = false;
+      
+      while (attempts < maxAttempts && !apiReady) {
+        try {
+          const response = await axios.get(`${imageProxyUrl}/status`, { timeout: 1000 });
+          if (response.status === 200) {
+            console.log(`[STARTUP] ✅ API Python Image Proxy está pronta em ${imageProxyUrl}!`);
+            apiReady = true;
+          }
+        } catch (error) {
+          // API ainda não está pronta, continuar tentando
+          attempts++;
+          if (attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        }
+      }
+      
+      // Se não conseguiu conectar, iniciar servidor mesmo assim (API pode iniciar depois)
+      // O backend tem detecção automática de porta, então vai encontrar a API quando ela estiver pronta
+      if (!apiReady) {
+        console.log('[STARTUP] ⚠️ API Python Image Proxy não respondeu em 10s, iniciando servidor mesmo assim...');
+        console.log('[STARTUP] 💡 O backend vai detectar automaticamente a porta da API quando ela estiver pronta');
+      }
+      
+      startServer();
+    } else {
+      if (process.env.AUTO_START_IMAGE_PROXY === 'false') {
+        console.log('[STARTUP] AUTO_START_IMAGE_PROXY=false, pulando inicialização automática da API Python');
+      }
+      startServer();
+    }
+  } catch (error) {
+    console.error('[STARTUP] ⚠️ Erro crítico na inicialização:', error.message);
+    console.error('[STARTUP] Stack:', error.stack);
+    console.warn('[STARTUP] Tentando iniciar servidor mesmo assim...');
+    try {
+      startServer();
+    } catch (startError) {
+      console.error('[STARTUP] ❌ Erro fatal ao iniciar servidor:', startError.message);
+      // Não fazer process.exit aqui - deixar o nodemon gerenciar
+    }
+  }
+})().catch((error) => {
+  // Capturar qualquer erro não tratado na IIFE async
+  console.error('[STARTUP] ❌ Erro não tratado na inicialização:', error.message);
+  console.error('[STARTUP] Stack:', error.stack);
+  console.warn('[STARTUP] Tentando iniciar servidor mesmo assim...');
+  try {
+    startServer();
+  } catch (startError) {
+    console.error('[STARTUP] ❌ Erro fatal ao iniciar servidor:', startError.message);
+  }
+});
 
-  // Garantir que o processo não termine silenciosamente
-  process.on('uncaughtException', (error) => {
+// Garantir que o processo não termine silenciosamente
+process.on('uncaughtException', (error) => {
     console.error('❌ Erro não capturado:', error);
     console.error('❌ Stack:', error.stack);
-    process.exit(1);
+    
+    // Tentar parar a API Python se estiver rodando
+    if (imageProxyStarter) {
+      try {
+        imageProxyStarter.stopImageProxy();
+      } catch (stopError) {
+        console.error('Erro ao parar API Python:', stopError.message);
+      }
+    }
+    
+    // Apenas encerrar se for um erro crítico que realmente impede o funcionamento
+    // Para erros menores, apenas logar e continuar
+    if (error.message && (
+      error.message.includes('EADDRINUSE') ||
+      error.message.includes('port') ||
+      error.message.includes('listen')
+    )) {
+      console.error('❌ Erro crítico de porta, encerrando...');
+      process.exit(1);
+    } else {
+      console.warn('⚠️ Erro não crítico, continuando execução...');
+      // Não encerrar o processo - deixar o nodemon gerenciar
+    }
   });
 
-  process.on('unhandledRejection', (reason, promise) => {
+// Parar API Python ao encerrar o servidor
+process.on('SIGINT', () => {
+    console.log('\n[SHUTDOWN] Encerrando servidor...');
+    if (imageProxyStarter) {
+      imageProxyStarter.stopImageProxy();
+    }
+    if (server) {
+      server.close(() => {
+        console.log('[SHUTDOWN] Servidor encerrado');
+        process.exit(0);
+      });
+    } else {
+      process.exit(0);
+    }
+  });
+
+process.on('SIGTERM', () => {
+    console.log('[SHUTDOWN] Recebido SIGTERM, encerrando servidor...');
+    if (imageProxyStarter) {
+      imageProxyStarter.stopImageProxy();
+    }
+    if (server) {
+      server.close(() => {
+        console.log('[SHUTDOWN] Servidor encerrado');
+        process.exit(0);
+      });
+    } else {
+      process.exit(0);
+    }
+  });
+
+process.on('unhandledRejection', (reason, promise) => {
     console.error('❌ Promise rejeitada não tratada:', reason);
     if (reason && reason.stack) {
       console.error('❌ Stack:', reason.stack);
     }
-    process.exit(1);
+    // Não encerrar o processo imediatamente - apenas logar o erro
+    // O servidor pode continuar funcionando mesmo com algumas promises rejeitadas
+    console.warn('⚠️ Continuando execução apesar da promise rejeitada...');
+    
+    // Se for um erro de conexão (ECONNREFUSED, ETIMEDOUT, etc), apenas logar
+    if (reason && reason.code && ['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNRESET'].includes(reason.code)) {
+      console.warn('⚠️ Erro de conexão detectado (não crítico):', reason.code);
+      return; // Não fazer nada, apenas logar
+    }
+    
+    // Se for um erro de rede, apenas logar
+    if (reason && reason.message && (
+      reason.message.includes('Network Error') ||
+      reason.message.includes('ECONNREFUSED') ||
+      reason.message.includes('ETIMEDOUT') ||
+      reason.message.includes('socket hang up')
+    )) {
+      console.warn('⚠️ Erro de rede detectado (não crítico):', reason.message);
+      return; // Não fazer nada, apenas logar
+    }
   });
 
-  console.log('[STARTUP] Servidor configurado com sucesso');
-} catch (error) {
-  console.error('❌ ERRO CRÍTICO ao iniciar servidor:', error);
-  console.error('❌ Stack:', error.stack);
-  process.exit(1);
-}
+console.log('[STARTUP] Servidor configurado com sucesso');
 
 module.exports = app;

@@ -10,10 +10,10 @@ async function processZPLToImage(zplCode) {
   try {
     console.log('📸 Processando ZPL via Labelary API para preview...');
     console.log('   [CONFIG] Resolução: 8dpmm (203 DPI) - mesma da impressora física');
-    console.log('   📏 Tamanho da etiqueta: 4" x 2" (831 x 376 dots)');
+    console.log('   📏 Tamanho da etiqueta: 4" x 2.46" (831 x 500 dots)');
     
     // Usar API do Labelary para converter ZPL real para imagem
-    // Label de 4" x 2" a 203 DPI = aproximadamente 831 x 376 pixels
+    // Label de 4" x 2.46" a 203 DPI = aproximadamente 831 x 500 pixels
     // IMPORTANTE: 8dpmm = 203 DPI (dots per inch)
     // QR codes de 40 dots devem aparecer como 40 pixels no preview
     const labelaryResponse = await axios.post(
@@ -48,7 +48,7 @@ async function processZPLToImage(zplCode) {
     // Converter SVG para PNG usando Sharp
     const pngBuffer = await sharp(Buffer.from(svg))
       .png()
-      .resize(831, 376)
+      .resize(831, 500)
       .toBuffer();
     
     const base64Image = pngBuffer.toString('base64');
@@ -62,9 +62,9 @@ async function processZPLToImage(zplCode) {
  * Cria SVG simplificado como fallback (sem ícone de sapato)
  */
 function createLabelSVGSimple() {
-  return `<svg width="831" height="376" xmlns="http://www.w3.org/2000/svg">
+  return `<svg width="831" height="500" xmlns="http://www.w3.org/2000/svg">
     <!-- Fundo branco apenas -->
-    <rect width="831" height="376" fill="white"/>
+    <rect width="831" height="500" fill="white"/>
     
   </svg>`;
 }

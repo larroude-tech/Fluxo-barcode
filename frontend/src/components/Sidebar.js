@@ -6,6 +6,7 @@ import {
   Printer,
   X
 } from 'lucide-react';
+import { API_BASE_URL } from '../config';
 import './Sidebar.css';
 
 const Sidebar = ({ activeTab, setActiveTab, isOpen, setIsOpen }) => {
@@ -34,12 +35,11 @@ const Sidebar = ({ activeTab, setActiveTab, isOpen, setIsOpen }) => {
   };
 
   const [usbOnline, setUsbOnline] = useState(false);
-  const API_BASE = 'http://localhost:3005/api';
 
   useEffect(() => {
     const check = async () => {
       try {
-        const resp = await axios.get(`${API_BASE}/usb/status`);
+        const resp = await axios.get(`${API_BASE_URL}/usb/status`);
         const connected = !!resp.data?.connected;
         const printers = Number(resp.data?.printerCount || 0);
         setUsbOnline(connected || printers > 0);

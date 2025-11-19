@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Search, Wifi, Printer, TestTube, Download, RefreshCw, AlertCircle, CheckCircle, XCircle } from 'lucide-react';
+import { API_BASE_URL } from '../config';
 import './RFIDPrinterTest.css';
 
 const RFIDPrinterTest = () => {
@@ -12,8 +13,6 @@ const RFIDPrinterTest = () => {
   const [status, setStatus] = useState('idle');
   const [error, setError] = useState(null);
 
-  const API_BASE = 'http://localhost:3005/api/rfid';
-
   // Verificar status do serviço
   useEffect(() => {
     checkServiceStatus();
@@ -21,7 +20,7 @@ const RFIDPrinterTest = () => {
 
   const checkServiceStatus = async () => {
     try {
-      const response = await axios.get(`${API_BASE}/status`);
+      const response = await axios.get(`${API_BASE_URL}/rfid/status`);
       setStatus('online');
     } catch (error) {
       setStatus('offline');
@@ -35,7 +34,7 @@ const RFIDPrinterTest = () => {
     setError(null);
     
     try {
-      const response = await axios.post(`${API_BASE}/discover`, {
+      const response = await axios.post(`${API_BASE_URL}/rfid/discover`, {
         timeout: 10000
       });
       
@@ -57,7 +56,7 @@ const RFIDPrinterTest = () => {
     setError(null);
     
     try {
-      const response = await axios.post(`${API_BASE}/test`, {
+      const response = await axios.post(`${API_BASE_URL}/rfid/test`, {
         ip,
         port: parseInt(port)
       });
@@ -94,7 +93,7 @@ const RFIDPrinterTest = () => {
     setError(null);
     
     try {
-      const response = await axios.post(`${API_BASE}/full-test`, {
+      const response = await axios.post(`${API_BASE_URL}/rfid/full-test`, {
         timeout: 10000
       });
       
@@ -114,7 +113,7 @@ const RFIDPrinterTest = () => {
   // Limpar resultados
   const clearResults = async () => {
     try {
-      await axios.post(`${API_BASE}/clear`);
+      await axios.post(`${API_BASE_URL}/rfid/clear`);
       setDiscoveredPrinters([]);
       setTestResults([]);
       setError(null);
@@ -126,7 +125,7 @@ const RFIDPrinterTest = () => {
   // Baixar relatório
   const downloadReport = async () => {
     try {
-      const response = await axios.get(`${API_BASE}/report`);
+      const response = await axios.get(`${API_BASE_URL}/rfid/report`);
       const report = response.data.report;
       
       const blob = new Blob([JSON.stringify(report, null, 2)], {

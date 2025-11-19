@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Download, AlertCircle, CheckCircle, Clock, FileText } from 'lucide-react';
 import { toast } from 'react-toastify';
+import { API_BASE_URL } from '../config';
 
 const GenerateSection = ({ 
   data, 
@@ -76,7 +77,7 @@ const GenerateSection = ({
 
     try {
       const normalized = normalizeItems(data);
-      const response = await axios.post('/api/generate-labels', {
+      const response = await axios.post(`${API_BASE_URL}/generate-labels`, {
         data: normalized
       }, {
         timeout: 300000 // 5 minutos de timeout

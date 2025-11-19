@@ -1,7 +1,8 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { AlertCircle, AlertTriangle, Info, Printer, List, Search, X, Grid3X3, LayoutList, Barcode, Package, Palette, Ruler, Hash, FileText, Settings } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Info, Printer, Search, X, Barcode, Package, Palette, FileText, Settings, Eye } from 'lucide-react';
 import { toast } from 'react-toastify';
+import { API_BASE_URL } from '../config';
 import LabelLayoutEditor from './LabelLayoutEditor.js';
 import './PrintList.css';
 
@@ -9,7 +10,7 @@ const REQUIRED_FIELDS = [
   { key: 'STYLE_NAME', label: 'Nome do Produto' },
   { key: 'VPN', label: 'VPN' },
   { key: 'BARCODE', label: 'Código de Barras' },
-  { key: 'DESCRIPTION', label: 'Material / Color' },
+  { key: 'DESCRIPTION', label: 'MAT. / Color' },
   { key: 'SIZE', label: 'Tamanho' },
   { key: 'PO', label: 'PO' },
   {
@@ -36,11 +37,9 @@ const validateDefaultField = (value) => {
   return String(value).trim() !== '';
 };
 
-const PreviewSection = ({ data, onPreviewGenerated }) => {
+const PreviewSection = ({ data, onBackToSelection }) => {
   const [singlePreview, setSinglePreview] = useState(null);
   const [error, setError] = useState(null);
-  const [viewMode, setViewMode] = useState('preview'); // 'preview' ou 'list'
-  const [listLayout, setListLayout] = useState('list'); // 'list' ou 'grid'
   const [printingItems, setPrintingItems] = useState(new Set());
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedItem, setSelectedItem] = useState(null);
@@ -48,6 +47,8 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
   const [showLayoutEditor, setShowLayoutEditor] = useState(false);
   const [layoutEditorPreview, setLayoutEditorPreview] = useState(null);
   const [isPrintingAll, setIsPrintingAll] = useState(false);
+  const [selectedPrintLayout, setSelectedPrintLayout] = useState('Default');
+  const [availableLayouts, setAvailableLayouts] = useState([]);
 
   const totalLabels = useMemo(() => {
     if (!data || data.length === 0) {
@@ -160,7 +161,7 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
 
   const fetchSinglePreview = useCallback(async (item) => {
     const normalized = normalizeItems([item]);
-    const response = await axios.post('/api/generate-preview', {
+      const response = await axios.post(`${API_BASE_URL}/generate-preview`, {
       data: normalized
     }, {
       timeout: 30000
@@ -168,6 +169,27 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
     const previewImage = response.data?.previews?.[0]?.preview || null;
     return previewImage;
   }, [normalizeItems]);
+
+  // Carregar layouts disponíveis
+  const loadLayouts = useCallback(async () => {
+    try {
+      const { data } = await axios.get(`${API_BASE_URL}/layout/list`);
+      if (data?.layouts) {
+        setAvailableLayouts(data.layouts);
+        // Manter o layout selecionado se ainda existir, senão usar o primeiro
+        const currentLayoutExists = data.layouts.find(l => l.name === selectedPrintLayout);
+        if (!currentLayoutExists && data.layouts.length > 0) {
+          setSelectedPrintLayout(data.layouts[0].name);
+        }
+      }
+    } catch (error) {
+      console.error('Erro ao carregar layouts:', error);
+    }
+  }, [selectedPrintLayout]);
+
+  useEffect(() => {
+    loadLayouts();
+  }, [loadLayouts]);
 
   useEffect(() => {
     let cancelled = false;
@@ -238,8 +260,9 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
 
     try {
       const normalized = normalizeItems(printableItems);
-      const response = await axios.post('/api/print-all', {
-        data: normalized
+      const response = await axios.post(`${API_BASE_URL}/print-all`, {
+        data: normalized,
+        layoutName: selectedPrintLayout
       }, {
         timeout: 300000
       });
@@ -249,14 +272,6 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
 
       if (successCount === totalCount && totalCount > 0) {
         toast.success(`✅ ${successCount} etiqueta(s) enviadas para impressão.`);
-      } else if (totalCount > 0) {
-        toast.warning(`${successCount}/${totalCount} etiquetas foram enviadas. Verifique o relatório.`);
-      } else {
-        toast.info('Nenhuma etiqueta foi processada.');
-      }
-
-      if (skippedCount > 0) {
-        toast.info(`${skippedCount} item(ns) com pendências foram ignorados na impressão em lote.`);
       }
     } catch (error) {
       console.error('Erro ao imprimir todas as etiquetas:', error);
@@ -298,9 +313,10 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
       // Criar array com o item repetido pela quantidade solicitada
       const printData = Array(qty).fill(itemData);
       
-      const response = await axios.post('/api/print-individual', {
+      const response = await axios.post(`${API_BASE_URL}/print-individual`, {
         data: printData,
-        quantity: qty
+        quantity: qty,
+        layoutName: selectedPrintLayout
       });
 
       if (response.data && response.data.results) {
@@ -313,8 +329,6 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
               ? `Etiqueta "${itemData.STYLE_NAME}" impressa com sucesso! (SEM VOID)`
               : `${successCount} etiquetas de "${itemData.STYLE_NAME}" impressas com sucesso! (SEM VOID)`
           );
-        } else {
-          toast.warning(`${successCount}/${totalCount} etiquetas impressas. Verifique os resultados.`);
         }
       } else {
         throw new Error('Resposta inválida do servidor');
@@ -350,12 +364,22 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
     <>
       <LabelLayoutEditor
         isOpen={showLayoutEditor}
-        onClose={() => setShowLayoutEditor(false)}
+        onClose={async () => {
+          setShowLayoutEditor(false);
+          // Recarregar lista de layouts quando o editor fechar para pegar layouts atualizados
+          await loadLayouts();
+        }}
         previewImage={layoutEditorPreview}
-        onSaveLayout={async (layout) => {
+        labelData={data && data.length > 0 ? data[0] : null}
+        onSaveLayout={async (savedLayoutData) => {
           try {
-            await axios.post('/api/layout/save', { layout });
-            toast.success('Layout salvo! As próximas impressões usarão este layout.');
+            // O LabelLayoutEditor já salva usando save-template, apenas atualizar a lista
+            await loadLayouts();
+            
+            // Se o layout salvo foi o que está selecionado, manter selecionado
+            if (savedLayoutData && savedLayoutData.name) {
+              setSelectedPrintLayout(savedLayoutData.name);
+            }
 
             if (data && data.length > 0) {
               const updatedPreview = await fetchSinglePreview(data[0]);
@@ -365,10 +389,61 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
               }
             }
           } catch (error) {
-            toast.error('Erro ao salvar layout');
+            console.error('Erro ao atualizar layouts:', error);
           }
         }}
       />
+      
+      {data && (
+        <div className="step-header-with-action step-header-top">
+          <div className="step-title step-title-inline">
+            <Eye size={20} />
+            Preview das Etiquetas
+          </div>
+          <div className="step-actions" style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <label style={{ fontSize: '14px', fontWeight: 500, color: '#374151' }}>
+                Layout:
+              </label>
+              <select
+                className="btn btn-secondary"
+                value={selectedPrintLayout}
+                onChange={(e) => setSelectedPrintLayout(e.target.value)}
+                disabled={isPrintingAll}
+                style={{ padding: '8px 12px', fontSize: '14px', cursor: 'pointer', minWidth: '150px' }}
+              >
+                {availableLayouts.map((layout) => (
+                  <option key={layout.name} value={layout.name}>
+                    {layout.name}
+                  </option>
+                ))}
+                {availableLayouts.length === 0 && (
+                  <option value="Default">Default</option>
+                )}
+              </select>
+            </div>
+            <button
+              className="btn btn-primary"
+              onClick={handlePrintAll}
+              disabled={isPrintingAll || totalPrintableLabels === 0}
+              title={
+                totalPrintableLabels === 0
+                  ? 'Nenhuma etiqueta sem pendências está disponível para impressão.'
+                  : undefined
+              }
+            >
+              <Printer size={16} />
+              {isPrintingAll ? 'Imprimindo todas...' : `Imprimir todas (${totalPrintableLabels})`}
+              {isPrintingAll && <div className="spinner-small" style={{ marginLeft: '8px' }}></div>}
+            </button>
+            {onBackToSelection && (
+              <button className="btn btn-secondary" onClick={onBackToSelection}>
+                Etapa Anterior
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       
       <div className="card">
       <div className="preview-controls">
@@ -379,7 +454,6 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
               onClick={async () => {
                 try {
                   if (!data || data.length === 0) {
-                    toast.warn('Nenhum dado disponível para gerar preview do layout.');
                     return;
                   }
 
@@ -396,7 +470,6 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
                       setLayoutEditorPreview(previewImage);
                     } else {
                       setLayoutEditorPreview(null);
-                      toast.warn('Preview não retornou imagem, abrindo editor sem preview.');
                     }
                   } catch (previewError) {
                     console.warn('Erro ao gerar preview para editor, abrindo editor sem preview:', previewError);
@@ -435,37 +508,6 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
             </button>
           )}
 
-          {data && (
-            <div className="view-mode-toggle">
-              <button
-                className={`btn ${viewMode === 'list' ? 'btn-primary' : 'btn-secondary'}`}
-                onClick={() => setViewMode('list')}
-              >
-                <List size={16} />
-                Lista para Impressão
-              </button>
-            </div>
-          )}
-
-          {/* Layout toggle para modo lista */}
-          {data && viewMode === 'list' && (
-            <div className="layout-toggle">
-              <button 
-                className={`btn btn-icon ${listLayout === 'list' ? 'btn-primary' : 'btn-secondary'}`}
-                onClick={() => setListLayout('list')}
-                title="Visualização em Lista"
-              >
-                <LayoutList size={16} />
-              </button>
-              <button 
-                className={`btn btn-icon ${listLayout === 'grid' ? 'btn-primary' : 'btn-secondary'}`}
-                onClick={() => setListLayout('grid')}
-                title="Visualização em Grid"
-              >
-                <Grid3X3 size={16} />
-              </button>
-            </div>
-          )}
         </div>
       </div>
 
@@ -492,9 +534,6 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
               <strong>Total de etiquetas:</strong> {totalLabels} (todos os itens) • <strong>Sem pendências:</strong> {totalPrintableLabels}
             </p>
           )}
-          <p>
-            <strong>Modo atual:</strong> {viewMode === 'list' ? 'Lista para impressão individual' : 'Preview visual das etiquetas'}
-          </p>
         </div>
       )}
 
@@ -526,34 +565,9 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
       )}
 
       {/* Lista de itens para impressão individual */}
-      {data && viewMode === 'list' && (
+      {data && (
         <div className="items-list">
           <div className="list-header">
-            <div className="header-top">
-              <h3>
-                <List size={20} />
-                Lista para Impressão ({filteredData.length} {filteredData.length === 1 ? 'item' : 'itens'})
-              </h3>
-              
-              {/* Layout toggle */}
-              <div className="layout-toggle">
-                <button 
-                  className={`btn btn-icon ${listLayout === 'list' ? 'btn-primary' : 'btn-secondary'}`}
-                  onClick={() => setListLayout('list')}
-                  title="Visualização em Lista"
-                >
-                  <LayoutList size={16} />
-                </button>
-                <button 
-                  className={`btn btn-icon ${listLayout === 'grid' ? 'btn-primary' : 'btn-secondary'}`}
-                  onClick={() => setListLayout('grid')}
-                  title="Visualização em Grid"
-                >
-                  <Grid3X3 size={16} />
-                </button>
-              </div>
-            </div>
-            
             {/* Campo de pesquisa */}
             <div className="search-container">
               <div className="search-input-wrapper">
@@ -576,35 +590,18 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
                 )}
               </div>
               
-              {/* Contador de resultados */}
-              <div className="search-results-count">
-                {searchTerm ? (
-                  <>
-                    <span className="results-found">{filteredData.length}</span>
-                    <span className="results-text">de {data.length} itens</span>
-                  </>
-                ) : (
-                  <>
-                    <span className="results-total">{data.length}</span>
-                    <span className="results-text">itens totais</span>
-                  </>
-                )}
-              </div>
             </div>
           </div>
-          {listLayout === 'list' ? (
-            // Layout em Lista
-            <div className="items-table">
+          {/* Layout em Lista */}
+          <div className="items-table">
               <div className="table-header">
-                <div className="header-cell">Item</div>
                 <div className="header-cell">Produto</div>
                 <div className="header-cell">VPN</div>
                 <div className="header-cell">Barcode</div>
-                <div className="header-cell">Material / Color</div>
+                <div className="header-cell">MAT. / Color</div>
                 <div className="header-cell">Tamanho</div>
                 <div className="header-cell">PO</div>
                 <div className="header-cell">Qtd</div>
-                <div className="header-cell">Ações</div>
               </div>
               {filteredData.map((item, index) => {
                 const originalIndex = data.findIndex(originalItem => originalItem === item);
@@ -621,11 +618,19 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
                     className={`table-row ${isInvalid ? 'row-invalid' : ''}`}
                     title={isInvalid ? `Campos obrigatórios faltando: ${missingLabelText}` : undefined}
                   >
-                    <div className="table-cell">{index + 1}</div>
                     <div className="table-cell">
-                      <div className="item-info">
-                        <strong>{item.STYLE_NAME || 'N/A'}</strong>
-                        {item.BRAND && <div className="item-brand">{item.BRAND}</div>}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <button
+                          className="btn btn-info btn-sm"
+                          onClick={() => openDetailsModal(item)}
+                          title="Ver detalhes"
+                        >
+                          <Info size={14} />
+                        </button>
+                        <div className="item-info">
+                          <strong>{item.STYLE_NAME || 'N/A'}</strong>
+                          {item.BRAND && <div className="item-brand">{item.BRAND}</div>}
+                        </div>
                       </div>
                     </div>
                     <div className="table-cell">
@@ -645,23 +650,14 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
                     <div className="table-cell">{item.SIZE || 'N/A'}</div>
                     <div className="table-cell">{item.PO ? `PO${item.PO}` : 'N/A'}</div>
                     <div className="table-cell">
-                      <span className="qty-badge">{item.QTY || 1}</span>
-                    </div>
-                    <div className="table-cell">
-                      {isInvalid && (
-                        <div className="missing-fields-hint">
-                          <AlertTriangle size={14} />
-                          <span>Campos faltantes: {missingLabelText}</span>
-                        </div>
-                      )}
-                      <div className="action-buttons">
-                        <button
-                          className="btn btn-info btn-sm"
-                          onClick={() => openDetailsModal(item)}
-                          title="Ver detalhes"
-                        >
-                          <Info size={14} />
-                        </button>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <span className="qty-badge">{item.QTY || 1}</span>
+                        {isInvalid && (
+                          <div className="missing-fields-hint">
+                            <AlertTriangle size={14} />
+                            <span>Campos faltantes: {missingLabelText}</span>
+                          </div>
+                        )}
                         <button
                           className="btn btn-print"
                           onClick={() => printIndividualLabel(item, originalIndex)}
@@ -690,145 +686,7 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
                 );
               })}
             </div>
-          ) : (
-            // Layout em Grid
-            <div className="items-grid">
-              {filteredData.map((item, index) => {
-                const originalIndex = data.findIndex(originalItem => originalItem === item);
-                const itemId = `${originalIndex}`;
-                const isPrinting = printingItems.has(itemId);
-                const barcode = generateBarcode(item);
-                const missingFields = getMissingFields(item);
-                const isInvalid = missingFields.length > 0;
-                const missingLabelText = missingFields.map(field => field.label).join(', ');
 
-                return (
-                  <div
-                    key={index}
-                    className={`grid-item ${isInvalid ? 'grid-item-invalid' : ''}`}
-                    title={isInvalid ? `Campos obrigatórios faltando: ${missingLabelText}` : undefined}
-                  >
-                    <div className="grid-item-header">
-                      <h4 className="item-title">{item.STYLE_NAME || 'N/A'}</h4>
-                      <button
-                        className="btn btn-info btn-sm"
-                        onClick={() => openDetailsModal(item)}
-                        title="Ver detalhes"
-                      >
-                        <Info size={14} />
-                      </button>
-                    </div>
-                    
-                    <div className="grid-item-content">
-                      <div className="item-field">
-                        <FileText size={14} />
-                        <span className="field-label">VPN:</span>
-                        <code className="field-value">{item.VPN || 'N/A'}</code>
-                      </div>
-                      
-                      <div className="item-field">
-                        <Barcode size={14} />
-                        <span className="field-label">Barcode:</span>
-                        <code className="field-value">{barcode}</code>
-                      </div>
-                      
-                      <div className="item-field">
-                        <Palette size={14} />
-                        <span className="field-label">Material / Color:</span>
-                        <span className="field-value material-description">
-                          {item.DESCRIPTION || 'N/A'}
-                        </span>
-                      </div>
-                      
-                      <div className="item-field">
-                        <Ruler size={14} />
-                        <span className="field-label">Tamanho:</span>
-                        <span className="field-value">{item.SIZE || 'N/A'}</span>
-                      </div>
-                      
-                      <div className="item-field">
-                        <Hash size={14} />
-                        <span className="field-label">Quantidade:</span>
-                        <span className="qty-badge">{item.QTY || 1}</span>
-                      </div>
-                      
-                      {isInvalid && (
-                        <div className="item-field missing-fields-inline">
-                          <AlertTriangle size={14} />
-                          <span className="field-label">Campos faltantes:</span>
-                          <span className="field-value">{missingLabelText}</span>
-                        </div>
-                      )}
-                      
-                      {item.PO && (
-                        <div className="item-field">
-                          <Hash size={14} />
-                          <span className="field-label">PO:</span>
-                          <span className="field-value">PO{item.PO}</span>
-                        </div>
-                      )}
-                      
-                    </div>
-                    
-                    <div className="grid-item-footer">
-                      <button
-                        className="btn btn-print btn-block"
-                        onClick={() => printIndividualLabel(item, originalIndex)}
-                        disabled={isPrinting || isInvalid}
-                        title={
-                          isInvalid
-                            ? `Impressão indisponível. Campos faltantes: ${missingLabelText}`
-                            : `Imprimir ${item.QTY || 1} etiqueta(s) de ${item.STYLE_NAME}`
-                        }
-                      >
-                        {isPrinting ? (
-                          <>
-                            <div className="spinner-small"></div>
-                            Imprimindo...
-                          </>
-                        ) : (
-                          <>
-                            <Printer size={16} />
-                            Imprimir {item.QTY || 1} etiqueta{(item.QTY || 1) > 1 ? 's' : ''}
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          <div className="bulk-actions">
-            <button
-              className="btn btn-primary"
-              onClick={handlePrintAll}
-              disabled={isPrintingAll || totalPrintableLabels === 0}
-              title={
-                totalPrintableLabels === 0
-                  ? 'Nenhuma etiqueta sem pendências está disponível para impressão.'
-                  : undefined
-              }
-            >
-              <Printer size={16} />
-              {isPrintingAll ? 'Imprimindo todas...' : `Imprimir todas (${totalPrintableLabels})`}
-              {isPrintingAll && <div className="spinner-small" style={{ marginLeft: '8px' }}></div>}
-            </button>
-          </div>
-          <div className="list-summary">
-            <p>
-              <strong>Exibindo:</strong> {filteredData.length} itens 
-              {searchTerm && <span> (filtrados de {data.length} totais)</span>} • 
-              <strong> Etiquetas:</strong> {filteredData.reduce((sum, item) => sum + (parseInt(item.QTY) || 1), 0)}
-              {searchTerm && (
-                <span className="search-info">
-                  {' • '}
-                  <strong>Pesquisando por:</strong> "{searchTerm}"
-                </span>
-              )}
-            </p>
-          </div>
         </div>
       )}
 
@@ -892,7 +750,7 @@ const PreviewSection = ({ data, onPreviewGenerated }) => {
                     Especificações
                   </h4>
                   <div className="detail-item">
-                    <span className="detail-label">Material / Color:</span>
+                    <span className="detail-label">MAT. / Color:</span>
                     <span className="detail-value material-description">
                       {selectedItem.DESCRIPTION || selectedItem.COLOR || 'N/A'}
                     </span>

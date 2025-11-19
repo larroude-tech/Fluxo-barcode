@@ -24,6 +24,8 @@
   display: flex;
   flex-direction: column;
   box-shadow: 2px 0 10px rgba(0, 0, 0, 0.1);
+  overflow-x: hidden;
+  overflow-y: hidden;
 }
 
 .sidebar-open {
@@ -37,6 +39,9 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  box-sizing: border-box;
+  overflow: hidden;
+  width: 100%;
 }
 
 .sidebar-logo {
@@ -68,12 +73,15 @@
   flex: 1;
   padding: 20px 0;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .nav-list {
   list-style: none;
   padding: 0;
   margin: 0;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .nav-item {
@@ -82,6 +90,7 @@
 
 .nav-link {
   width: 100%;
+  max-width: 100%;
   background: none;
   border: none;
   color: white;
@@ -94,11 +103,12 @@
   transition: all 0.2s ease;
   border-radius: 0;
   position: relative;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .nav-link:hover {
   background: rgba(255, 255, 255, 0.1);
-  transform: translateX(4px);
 }
 
 .nav-link-active {
@@ -129,18 +139,26 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .nav-label {
   font-size: 14px;
   font-weight: 500;
   line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nav-description {
   font-size: 11px;
   opacity: 0.7;
   line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Footer */
@@ -148,6 +166,9 @@
   padding: 20px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(0, 0, 0, 0.1);
+  box-sizing: border-box;
+  overflow: hidden;
+  width: 100%;
 }
 
 .sidebar-version {

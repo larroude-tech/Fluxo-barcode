@@ -18,6 +18,7 @@ import {
   RotateCcw,
   Download
 } from 'lucide-react';
+import { API_BASE_URL } from '../config';
 import './PrinterConfig.css';
 
 const PrinterConfig = () => {
@@ -64,8 +65,6 @@ const PrinterConfig = () => {
     autoConnect: false
   });
 
-  const API_BASE = 'http://localhost:3005/api';
-
   // Verificar status dos serviços ao carregar
   useEffect(() => {
     checkAllServices();
@@ -82,7 +81,7 @@ const PrinterConfig = () => {
 
     // RFID (saúde do serviço)
     try {
-      await axios.get(`${API_BASE}/rfid/status`);
+      await axios.get(`${API_BASE_URL}/rfid/status`);
       newServices.rfid = 'online';
       addLog(`✅ Serviço RFID online`, 'success');
     } catch (error) {
@@ -92,7 +91,7 @@ const PrinterConfig = () => {
 
     // USB (status real do hardware)
     try {
-      const resp = await axios.get(`${API_BASE}/usb/status`);
+      const resp = await axios.get(`${API_BASE_URL}/usb/status`);
       const connected = !!resp.data?.connected;
       const printers = Number(resp.data?.printerCount || 0);
       newServices.usb = (connected || printers > 0) ? 'online' : 'offline';
@@ -108,7 +107,7 @@ const PrinterConfig = () => {
 
     // Python API
     try {
-      await axios.get(`${API_BASE}/python/status`);
+      await axios.get(`${API_BASE_URL}/python/status`);
       newServices.python = 'online';
       addLog(`✅ Serviço PYTHON online`, 'success');
     } catch (error) {
@@ -118,7 +117,7 @@ const PrinterConfig = () => {
 
     // Python USB
     try {
-      await axios.get(`${API_BASE}/python-usb/status`);
+      await axios.get(`${API_BASE_URL}/python-usb/status`);
       newServices.pythonUsb = 'online';
       addLog(`✅ Serviço PYTHON-USB online`, 'success');
     } catch (error) {
@@ -128,7 +127,7 @@ const PrinterConfig = () => {
 
     // MUPA
     try {
-      await axios.get(`${API_BASE}/mupa/status`);
+      await axios.get(`${API_BASE_URL}/mupa/status`);
       newServices.mupa = 'online';
       addLog(`✅ Serviço MUPA online`, 'success');
     } catch (error) {
@@ -145,7 +144,7 @@ const PrinterConfig = () => {
     addLog('🔍 Descobrindo impressoras RFID na rede...', 'info');
     
     try {
-      const response = await axios.post(`${API_BASE}/rfid/discover`, {
+      const response = await axios.post(`${API_BASE_URL}/rfid/discover`, {
         timeout: 10000
       });
       
@@ -167,7 +166,7 @@ const PrinterConfig = () => {
     addLog(`🧪 Testando impressora RFID ${ip}:${port}...`, 'info');
     
     try {
-      const response = await axios.post(`${API_BASE}/rfid/test`, { ip, port });
+      const response = await axios.post(`${API_BASE_URL}/rfid/test`, { ip, port });
       
       setRfidData(prev => ({
         ...prev,
@@ -187,7 +186,7 @@ const PrinterConfig = () => {
     addLog('🚀 Executando teste completo RFID...', 'info');
     
     try {
-      const response = await axios.post(`${API_BASE}/rfid/full-test`);
+      const response = await axios.post(`${API_BASE_URL}/rfid/full-test`);
       
       setRfidData(prev => ({
         ...prev,
@@ -209,7 +208,7 @@ const PrinterConfig = () => {
     addLog('🔍 Detectando impressoras USB...', 'info');
     
     try {
-      const response = await axios.post(`${API_BASE}/usb/detect`);
+      const response = await axios.post(`${API_BASE_URL}/usb/detect`);
       
       setUsbData(prev => ({
         ...prev,
@@ -227,8 +226,8 @@ const PrinterConfig = () => {
   const connectUSB = async (portPath = null) => {
     setIsLoading(true);
     const endpoint = portPath ? 
-      `${API_BASE}/usb/connect` : 
-      `${API_BASE}/usb/auto-connect`;
+      `${API_BASE_URL}/usb/connect` : 
+      `${API_BASE_URL}/usb/auto-connect`;
     
     addLog(`🔌 ${portPath ? `Conectando à porta ${portPath}` : 'Auto-conectando USB'}...`, 'info');
     
@@ -254,7 +253,7 @@ const PrinterConfig = () => {
     addLog('🧪 Testando conexão USB...', 'info');
     
     try {
-      const response = await axios.post(`${API_BASE}/usb/full-test`);
+      const response = await axios.post(`${API_BASE_URL}/usb/full-test`);
       
       setUsbData(prev => ({
         ...prev,
@@ -277,7 +276,7 @@ const PrinterConfig = () => {
     addLog('🔍 Detectando impressoras via Python...', 'info');
     
     try {
-      const response = await axios.post(`${API_BASE}/python/detect`);
+      const response = await axios.post(`${API_BASE_URL}/python/detect`);
       
       setPythonData(prev => ({
         ...prev,
@@ -298,7 +297,7 @@ const PrinterConfig = () => {
     addLog('🧪 Testando conexão Python...', 'info');
     
     try {
-      const response = await axios.post(`${API_BASE}/python/full-test`);
+      const response = await axios.post(`${API_BASE_URL}/python/full-test`);
       
       setPythonData(prev => ({
         ...prev,
@@ -320,7 +319,7 @@ const PrinterConfig = () => {
     addLog('🧪 Testando integração MUPA RFID...', 'info');
     
     try {
-      const response = await axios.post(`${API_BASE}/mupa/test`, {
+      const response = await axios.post(`${API_BASE_URL}/mupa/test`, {
         text: 'MUPA_TESTE_01'
       });
       
@@ -349,13 +348,13 @@ const PrinterConfig = () => {
     try {
       // Tentar Python USB primeiro (método que funciona)
       if (services.pythonUsb === 'online') {
-        await axios.post(`${API_BASE}/python-usb/send-zpl`, { zplCommand: testZPL });
+        await axios.post(`${API_BASE_URL}/python-usb/send-zpl`, { zplCommand: testZPL });
         addLog('✅ ZPL enviado via Python USB', 'success');
       } else if (services.usb === 'online') {
-        await axios.post(`${API_BASE}/usb/send-zpl`, { zplCommand: testZPL });
+        await axios.post(`${API_BASE_URL}/usb/send-zpl`, { zplCommand: testZPL });
         addLog('✅ ZPL enviado via USB', 'success');
       } else if (services.python === 'online') {
-        await axios.post(`${API_BASE}/python/send-zpl`, { zplCommand: testZPL });
+        await axios.post(`${API_BASE_URL}/python/send-zpl`, { zplCommand: testZPL });
         addLog('✅ ZPL enviado via Python', 'success');
       } else {
         throw new Error('Nenhum serviço de impressão disponível');
@@ -372,7 +371,7 @@ const PrinterConfig = () => {
     addLog('🧪 Testando Python USB (método que funciona)...', 'info');
     
     try {
-      const response = await axios.post(`${API_BASE}/python-usb/full-test`);
+      const response = await axios.post(`${API_BASE_URL}/python-usb/full-test`);
       
       const result = response.data.result;
       addLog(`✅ Teste Python USB concluído`, 'success');

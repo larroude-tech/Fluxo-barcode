@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
-import { Database, Loader2, RefreshCcw } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { toast } from 'react-toastify';
+import { API_BASE_URL } from '../config';
 import './components.css';
 
 const DataSelector = ({ onDataLoaded }) => {
@@ -35,20 +36,14 @@ const DataSelector = ({ onDataLoaded }) => {
     return poList.filter((po) => po && po.toString().toLowerCase().includes(search));
   }, [poList, poSearch]);
 
-  useEffect(() => {
-    // Atualiza seleção automaticamente quando o texto corresponde a uma PO existente
-    const exactMatch = poList.find((po) => po && po.toString().toLowerCase() === poSearch.toLowerCase());
-    if (exactMatch) {
-      setSelectedPo(exactMatch);
-    }
-  }, [poSearch, poList]);
+  // Removido: atualização automática - agora é feito no onChange do input
 
   useEffect(() => {
     const fetchPos = async () => {
       setPoLoading(true);
       setPoError(null);
       try {
-        const { data } = await axios.get('/api/purchase-orders');
+        const { data } = await axios.get(`${API_BASE_URL}/purchase-orders`);
         setPoList(data?.data || []);
       } catch (error) {
         console.error(error);
@@ -71,7 +66,7 @@ const DataSelector = ({ onDataLoaded }) => {
     const fetchData = async () => {
       setDataLoading(true);
       try {
-        const { data } = await axios.get('/api/labels', {
+        const { data } = await axios.get(`${API_BASE_URL}/labels`, {
           params: { po: selectedPo }
         });
 
@@ -112,64 +107,120 @@ const DataSelector = ({ onDataLoaded }) => {
     onDataLoaded(filtered, { po: selectedPo, sku: skuFilter });
   }, [skuFilter, rawData, onDataLoaded, selectedPo]);
 
-  const retryPoList = () => {
-    setPoList([]);
-    setSelectedPo('');
-    setRawData([]);
-    setSkuFilter('ALL');
-    setPoError(null);
-    onDataLoaded(null);
-  };
 
   return (
     <div className="card">
-      <div className="data-selector-header">
-        <h3>
-          <Database size={18} />
-          Selecione a PO
-        </h3>
-        <button
-          className="btn btn-icon"
-          onClick={retryPoList}
-          title="Recarregar lista de POs"
-          disabled={poLoading}
-        >
-          <RefreshCcw size={16} />
-        </button>
-      </div>
-
       <div className="form-group">
-        <label htmlFor="po-select">Escolha a PO (ordem_pedido)</label>
-        <input
-          type="text"
-          className="input"
-          placeholder="Pesquisar PO..."
-          value={poSearch}
-          onChange={(event) => setPoSearch(event.target.value)}
-          list="po-options"
-        />
-        <datalist id="po-options">
-          {filteredPoList.map((po) => (
-            <option key={po} value={po} />
-          ))}
-        </datalist>
-        <div className="select-wrapper">
-          {poLoading && <Loader2 className="spinner-inline" size={18} />}
-          <select
-            id="po-select"
-            value={selectedPo}
-            onChange={(event) => setSelectedPo(event.target.value)}
-            disabled={poLoading || !filteredPoList.length}
-          >
-            <option value="">Selecione uma PO...</option>
+        <div style={{ position: 'relative' }}>
+          {(poLoading || dataLoading) && (
+            <Loader2 
+              className="spinner-inline" 
+              size={18} 
+              style={{ 
+                position: 'absolute', 
+                right: '12px', 
+                top: '50%', 
+                transform: 'translateY(-50%)',
+                pointerEvents: 'none'
+              }} 
+            />
+          )}
+          <input
+            id="po-search"
+            type="text"
+            className="input"
+            placeholder="Digite ou selecione a PO..."
+            value={poSearch}
+            onChange={(event) => {
+              // Não permitir edição se estiver carregando dados
+              if (dataLoading) {
+                return;
+              }
+              const value = event.target.value;
+              setPoSearch(value);
+              // Atualizar selectedPo quando o texto mudar e corresponder a uma PO
+              const trimmedValue = value.trim();
+              if (trimmedValue) {
+                const exactMatch = poList.find((po) => po && po.toString().toLowerCase() === trimmedValue.toLowerCase());
+                if (exactMatch) {
+                  setSelectedPo(exactMatch);
+                } else {
+                  // Se não houver correspondência exata, limpar selectedPo
+                  setSelectedPo('');
+                }
+              } else {
+                setSelectedPo('');
+              }
+            }}
+            onInput={(event) => {
+              // Não permitir edição se estiver carregando dados
+              if (dataLoading) {
+                return;
+              }
+              // Quando uma opção do datalist é selecionada
+              const value = event.target.value.trim();
+              if (value) {
+                const exactMatch = poList.find((po) => po && po.toString().toLowerCase() === value.toLowerCase());
+                if (exactMatch) {
+                  setSelectedPo(exactMatch);
+                }
+              }
+            }}
+            onKeyDown={(event) => {
+              if (dataLoading) {
+                event.preventDefault();
+                return;
+              }
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                const value = poSearch.trim();
+                if (value) {
+                  // Tentar encontrar correspondência exata ou usar o valor digitado
+                  const exactMatch = poList.find((po) => po && po.toString().toLowerCase() === value.toLowerCase());
+                  if (exactMatch) {
+                    setSelectedPo(exactMatch);
+                    setPoSearch(exactMatch);
+                  } else if (poList.length > 0) {
+                    // Se não houver correspondência exata, usar o valor digitado mesmo assim
+                    setSelectedPo(value);
+                  }
+                }
+              }
+            }}
+            onBlur={() => {
+              // Quando sair do campo, verificar se há correspondência exata
+              if (dataLoading) {
+                return;
+              }
+              const value = poSearch.trim();
+              if (value) {
+                const exactMatch = poList.find((po) => po && po.toString().toLowerCase() === value.toLowerCase());
+                if (exactMatch) {
+                  setSelectedPo(exactMatch);
+                  setPoSearch(exactMatch);
+                }
+              }
+            }}
+            list="po-options"
+            disabled={poLoading || dataLoading}
+            style={{ 
+              opacity: (poLoading || dataLoading) ? 0.6 : 1,
+              cursor: (poLoading || dataLoading) ? 'not-allowed' : 'text'
+            }}
+          />
+          <datalist id="po-options">
             {filteredPoList.map((po) => (
-              <option key={po} value={po}>
-                {po}
-              </option>
+              <option key={po} value={po} />
             ))}
-          </select>
+          </datalist>
         </div>
         {poError && <p className="error">{poError}</p>}
+        {dataLoading && (
+          <p className="info" style={{ marginTop: '8px', fontSize: '13px', color: '#64748b' }}>
+            <Loader2 className="spinner-inline" size={14} />
+            Carregando itens da PO...
+          </p>
+        )}
       </div>
 
       {rawData.length > 0 && (

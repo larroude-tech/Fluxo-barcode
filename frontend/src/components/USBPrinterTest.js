@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { API_BASE_URL } from '../config';
 import './USBPrinterTest.css';
 
 const USBPrinterTest = () => {
@@ -12,15 +13,13 @@ const USBPrinterTest = () => {
   const [error, setError] = useState(null);
   const [zplCommand, setZplCommand] = useState('^XA^FO50,50^A0N,50,50^FDTeste USB^FS^XZ');
 
-  const API_BASE = 'http://localhost:3005/api';
-
   // Carregar portas disponíveis
   const loadPorts = async () => {
     try {
       setLoading(true);
       setError(null);
       
-      const response = await fetch(`${API_BASE}/usb/ports`);
+      const response = await fetch(`${API_BASE_URL}/usb/ports`);
       const data = await response.json();
       
       if (data.success) {
@@ -39,7 +38,7 @@ const USBPrinterTest = () => {
   // Verificar status da conexão
   const checkConnectionStatus = async () => {
     try {
-      const response = await fetch(`${API_BASE}/usb/info`);
+      const response = await fetch(`${API_BASE_URL}/usb/info`);
       const data = await response.json();
       
       if (data.success) {
@@ -57,7 +56,7 @@ const USBPrinterTest = () => {
       setLoading(true);
       setError(null);
       
-      const response = await fetch(`${API_BASE}/usb/auto-connect`, {
+      const response = await fetch(`${API_BASE_URL}/usb/auto-connect`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -95,7 +94,7 @@ const USBPrinterTest = () => {
       setLoading(true);
       setError(null);
       
-      const response = await fetch(`${API_BASE}/usb/connect`, {
+      const response = await fetch(`${API_BASE_URL}/usb/connect`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -130,7 +129,7 @@ const USBPrinterTest = () => {
       setLoading(true);
       setError(null);
       
-      const response = await fetch(`${API_BASE}/usb/disconnect`, {
+      const response = await fetch(`${API_BASE_URL}/usb/disconnect`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -162,7 +161,7 @@ const USBPrinterTest = () => {
       setLoading(true);
       setError(null);
       
-      const response = await fetch(`${API_BASE}/usb/test`, {
+      const response = await fetch(`${API_BASE_URL}/usb/test`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -192,7 +191,7 @@ const USBPrinterTest = () => {
       setLoading(true);
       setError(null);
       
-      const response = await fetch(`${API_BASE}/usb/send-zpl`, {
+      const response = await fetch(`${API_BASE_URL}/usb/send-zpl`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'

@@ -30,9 +30,11 @@ FROM node:20-bullseye-slim AS backend-deps
 WORKDIR /app/backend
 
 # Install system dependencies required by native Node modules (e.g. sharp)
+# python3 e pip são necessários para a API Python que roda junto com o backend
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     python3 \
+    python3-pip \
     make \
     g++ \
     libvips-dev \
@@ -41,7 +43,12 @@ RUN apt-get update \
 COPY backend/package*.json ./
 RUN npm ci --omit=dev
 
+# Install Python dependencies for API Python Image Proxy
+COPY requirements.txt ./
+RUN pip3 install --no-cache-dir -r requirements.txt
+
 # Copy backend source (without node_modules from host)
+# This includes the API Images folder with image_proxy.py and image-proxy-starter.js
 COPY backend/ ./
 
 # -------------------------------
@@ -52,11 +59,28 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
+# Install Python dependencies in runner stage (needed for API Python)
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+  && rm -rf /var/lib/apt/lists/*
+
+# Copy and install Python requirements
+COPY requirements.txt ./
+RUN pip3 install --no-cache-dir -r requirements.txt
+
 # Copy backend (code + node_modules)
 COPY --from=backend-deps /app/backend ./backend
 
 # Copy frontend build into backend public assets
 COPY --from=frontend-builder /app/frontend/build ./backend/public/app
+
+# Copy templates and layouts from project root
+# Templates are loaded from ../templates/ relative to backend/server.js
+# Layouts are loaded from backend/layouts/
+COPY templates/ ./templates/
+COPY backend/layouts/ ./backend/layouts/
 
 # Optional: create non-root user for better security
 RUN groupadd -r nodejs && useradd -r -g nodejs nodejs

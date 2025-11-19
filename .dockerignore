@@ -28,3 +28,6 @@ tmp
 /coverage
 /logs
 
+# IMPORTANTE: Templates e layouts devem ser incluídos no build
+# Não ignorar templates/ e backend/layouts/
+

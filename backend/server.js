@@ -40,7 +40,7 @@ console.log('[INIT] node-zpl carregado');
 // Image Proxy Starter (opcional - inicia API Python automaticamente)
 let imageProxyStarter;
 try {
-  imageProxyStarter = require('./image-proxy-starter');
+  imageProxyStarter = require('./API Images/image-proxy-starter');
   console.log('[INIT] image-proxy-starter carregado');
 } catch (error) {
   console.warn('[INIT] image-proxy-starter não encontrado (continuando...):', error.message);
@@ -370,6 +370,8 @@ try {
 }
 
 const app = express();
+// Cloud Run define PORT automaticamente (padrão: 8080)
+// Para desenvolvimento local, usa 3005 se PORT não estiver definido
 const PORT = process.env.PORT || 3005;
 
 console.log(`[INIT] Inicializando servidor na porta ${PORT}`);
@@ -387,7 +389,7 @@ app.use(cors({
 const maxUploadSize = process.env.MAX_UPLOAD_SIZE || '50mb';
 app.use(express.json({ limit: maxUploadSize }));
 app.use(express.urlencoded({ limit: maxUploadSize, extended: true }));
-app.use(express.static('public'));
+// express.static para frontend será configurado depois, se o frontend existir
 
 // Registrar rotas (pode falhar se pool for null, mas não deve bloquear)
 try {
@@ -619,8 +621,11 @@ async function processProductImage(imageUrl, layout, context = '') {
     return { imageX, imageY, imageWidth, imageHeight, imageZPL: null };
   }
   
-  // Validar que a imagem vem da API Python
-  const isFromPythonAPI = imageUrl.includes('/image/reference/') || imageUrl.includes('127.0.0.1') || imageUrl.includes('localhost');
+  // Validar que a imagem vem da API Python (pode ser localhost ou Cloud Run URL)
+  const isFromPythonAPI = imageUrl.includes('/image/reference/') || 
+                          imageUrl.includes('127.0.0.1') || 
+                          imageUrl.includes('localhost') ||
+                          (process.env.IMAGE_PROXY_URL && imageUrl.includes(process.env.IMAGE_PROXY_URL));
   if (!isFromPythonAPI) {
     console.warn(`[IMAGE] ${contextLabel}⚠️ Aviso: URL da imagem não parece ser da API Python: ${imageUrl}`);
   } else {
@@ -797,10 +802,15 @@ async function convertImageToZPL(imageUrl, width = 160, height = 160) {
                                   imageUrl.includes('i.imgur.com') || imageUrl.includes('cdn.') ||
                                   imageUrl.includes('/images/') || imageUrl.includes('/image/') ||
                                   imageUrl.includes('/image/reference/') || imageUrl.includes('127.0.0.1') ||
-                                  imageUrl.includes('localhost');
+                                  imageUrl.includes('localhost') ||
+                                  (process.env.IMAGE_PROXY_URL && imageUrl.includes(process.env.IMAGE_PROXY_URL));
       
       // NUNCA gerar QR code se a URL for da API Python - sempre tratar como imagem
-      const isPythonAPI = imageUrl.includes('/image/reference/') || imageUrl.includes('127.0.0.1') || imageUrl.includes('localhost');
+      // Suporta localhost (dev) e Cloud Run URL (produção)
+      const isPythonAPI = imageUrl.includes('/image/reference/') || 
+                         imageUrl.includes('127.0.0.1') || 
+                         imageUrl.includes('localhost') ||
+                         (process.env.IMAGE_PROXY_URL && imageUrl.includes(process.env.IMAGE_PROXY_URL));
       if (isPythonAPI) {
         console.log(`[IMAGE] ✅ URL da API Python detectada - sempre tratar como imagem (nunca gerar QR code)`);
         // Forçar que seja tratada como imagem conhecida, pular geração de QR code
@@ -952,7 +962,11 @@ async function convertImageToZPL(imageUrl, width = 160, height = 160) {
         
         if (!isImage) {
           // NUNCA gerar QR code se a URL for da API Python
-          const isPythonAPI = imageUrl.includes('/image/reference/') || imageUrl.includes('127.0.0.1') || imageUrl.includes('localhost');
+          // Suporta localhost (dev) e Cloud Run URL (produção)
+          const isPythonAPI = imageUrl.includes('/image/reference/') || 
+                             imageUrl.includes('127.0.0.1') || 
+                             imageUrl.includes('localhost') ||
+                             (process.env.IMAGE_PROXY_URL && imageUrl.includes(process.env.IMAGE_PROXY_URL));
           if (isPythonAPI) {
             console.error(`[ERRO] API Python retornou dados que não são uma imagem válida!`);
             console.error(`[ERRO] Verifique se a API Python está funcionando corretamente e retornando imagens.`);
@@ -1046,7 +1060,11 @@ async function convertImageToZPL(imageUrl, width = 160, height = 160) {
             
             if (!isImage) {
               // NUNCA gerar QR code se a URL for da API Python
-              const isPythonAPI = imageUrl.includes('/image/reference/') || imageUrl.includes('127.0.0.1') || imageUrl.includes('localhost');
+              // Suporta localhost (dev) e Cloud Run URL (produção)
+          const isPythonAPI = imageUrl.includes('/image/reference/') || 
+                             imageUrl.includes('127.0.0.1') || 
+                             imageUrl.includes('localhost') ||
+                             (process.env.IMAGE_PROXY_URL && imageUrl.includes(process.env.IMAGE_PROXY_URL));
               if (isPythonAPI) {
                 console.error(`[ERRO] API Python retornou dados que não são uma imagem válida!`);
                 console.error(`[ERRO] Verifique se a API Python está funcionando corretamente e retornando imagens.`);
@@ -1086,7 +1104,11 @@ async function convertImageToZPL(imageUrl, width = 160, height = 160) {
             }
           } catch (altError) {
             // NUNCA gerar QR code se a URL for da API Python
-            const isPythonAPI = imageUrl.includes('/image/reference/') || imageUrl.includes('127.0.0.1') || imageUrl.includes('localhost');
+            // Suporta localhost (dev) e Cloud Run URL (produção)
+          const isPythonAPI = imageUrl.includes('/image/reference/') || 
+                             imageUrl.includes('127.0.0.1') || 
+                             imageUrl.includes('localhost') ||
+                             (process.env.IMAGE_PROXY_URL && imageUrl.includes(process.env.IMAGE_PROXY_URL));
             if (isPythonAPI) {
               console.error(`[ERRO] Erro ao baixar imagem da API Python: ${altError.message}`);
               console.error(`[ERRO] Verifique se a API Python está funcionando corretamente.`);
@@ -1121,7 +1143,11 @@ async function convertImageToZPL(imageUrl, width = 160, height = 160) {
           }
         } else {
           // NUNCA gerar QR code se a URL for da API Python
-          const isPythonAPI = imageUrl.includes('/image/reference/') || imageUrl.includes('127.0.0.1') || imageUrl.includes('localhost');
+          // Suporta localhost (dev) e Cloud Run URL (produção)
+          const isPythonAPI = imageUrl.includes('/image/reference/') || 
+                             imageUrl.includes('127.0.0.1') || 
+                             imageUrl.includes('localhost') ||
+                             (process.env.IMAGE_PROXY_URL && imageUrl.includes(process.env.IMAGE_PROXY_URL));
           if (isPythonAPI) {
             console.error(`[ERRO] Erro ao baixar imagem da API Python: ${downloadError.message}`);
             console.error(`[ERRO] Verifique se a API Python está funcionando corretamente.`);
@@ -1386,9 +1412,8 @@ async function convertImageToZPL(imageUrl, width = 160, height = 160) {
 // Middleware já configurado acima (CORS e parsing JSON)
 
 // Rotas
-app.get('/', (req, res) => {
-  res.json({ message: 'Servidor Larroudé RFID funcionando!' });
-});
+// A rota catch-all para servir o frontend React será definida no final,
+// após todas as rotas de API serem registradas
 
 // Health check endpoint para Cloud Run
 app.get('/health', (req, res) => {
@@ -2107,9 +2132,18 @@ app.post('/api/print-individual', async (req, res) => {
               // Construir URL manualmente usando a referência normalizada
               const normalizedRef = referencia.replace(/[.\-]/g, '');
               if (normalizedRef.length === 7) {
-                // Detectar porta da API Python
-                const imageProxyPort = process.env._IMAGE_PROXY_ACTUAL_PORT || process.env.IMAGE_PROXY_PORT || '8000';
-                imageUrl = `http://127.0.0.1:${imageProxyPort}/image/reference/${normalizedRef}`;
+                // Construir URL da API Python
+                // Cloud Run: usar IMAGE_PROXY_URL se definido (URL completa do serviço)
+                // Local: usar localhost com porta
+                const imageProxyUrl = process.env.IMAGE_PROXY_URL;
+                if (imageProxyUrl) {
+                  // URL completa do serviço Cloud Run ou externo
+                  imageUrl = `${imageProxyUrl.replace(/\/$/, '')}/image/reference/${normalizedRef}`;
+                } else {
+                  // Desenvolvimento local: usar localhost
+                  const imageProxyPort = process.env._IMAGE_PROXY_ACTUAL_PORT || process.env.IMAGE_PROXY_PORT || '8000';
+                  imageUrl = `http://127.0.0.1:${imageProxyPort}/image/reference/${normalizedRef}`;
+                }
                 console.log(`[IMAGE] ✅ URL construída para referência "${referencia}" (normalizada: ${normalizedRef}): ${imageUrl}`);
               } else {
                 console.warn(`[IMAGE] ⚠️ Referência "${referencia}" não tem formato válido (esperado: 7 dígitos após normalização)`);
@@ -2710,9 +2744,18 @@ app.post('/api/print-all', async (req, res) => {
               // Construir URL manualmente usando a referência normalizada
               const normalizedRef = referencia.replace(/[.\-]/g, '');
               if (normalizedRef.length === 7) {
-                // Detectar porta da API Python
-                const imageProxyPort = process.env._IMAGE_PROXY_ACTUAL_PORT || process.env.IMAGE_PROXY_PORT || '8000';
-                imageUrl = `http://127.0.0.1:${imageProxyPort}/image/reference/${normalizedRef}`;
+                // Construir URL da API Python
+                // Cloud Run: usar IMAGE_PROXY_URL se definido (URL completa do serviço)
+                // Local: usar localhost com porta
+                const imageProxyUrl = process.env.IMAGE_PROXY_URL;
+                if (imageProxyUrl) {
+                  // URL completa do serviço Cloud Run ou externo
+                  imageUrl = `${imageProxyUrl.replace(/\/$/, '')}/image/reference/${normalizedRef}`;
+                } else {
+                  // Desenvolvimento local: usar localhost
+                  const imageProxyPort = process.env._IMAGE_PROXY_ACTUAL_PORT || process.env.IMAGE_PROXY_PORT || '8000';
+                  imageUrl = `http://127.0.0.1:${imageProxyPort}/image/reference/${normalizedRef}`;
+                }
                 console.log(`[IMAGE] ✅ URL construída para referência "${referencia}" (normalizada: ${normalizedRef}): ${imageUrl} [print-all]`);
               } else {
                 console.warn(`[IMAGE] ⚠️ Referência "${referencia}" não tem formato válido (esperado: 7 dígitos após normalização) [print-all]`);
@@ -6429,6 +6472,55 @@ app.use((req, res, next) => {
   next();
 });
 
+// Configurar rota catch-all para servir frontend React (deve ser a última rota)
+// Isso permite que o React Router funcione corretamente (SPA)
+const frontendPath = path.join(__dirname, 'public', 'app');
+const indexPath = path.join(frontendPath, 'index.html');
+
+// Verificar se o frontend existe (pode não existir em desenvolvimento local)
+const frontendExists = fs.existsSync(indexPath);
+
+if (frontendExists) {
+  // Servir arquivos estáticos do frontend (JS, CSS, imagens, etc.)
+  app.use(express.static(frontendPath));
+  
+  // Para todas as rotas que não começam com /api ou /health, servir o index.html (SPA fallback)
+  // Isso permite que o React Router funcione corretamente
+  app.get('*', (req, res) => {
+    // Excluir rotas de API e health check
+    if (req.path.startsWith('/api') || req.path === '/health') {
+      return res.status(404).json({ error: 'Endpoint not found' });
+    }
+    // Caso contrário, servir o index.html do React
+    res.sendFile(indexPath);
+  });
+  
+  console.log('[INIT] ✅ Frontend React configurado para servir em /');
+  console.log(`[INIT] Frontend path: ${frontendPath}`);
+} else {
+  // Em desenvolvimento local: frontend roda separado na porta 3000 (React dev server)
+  // Backend apenas serve API na porta 3005
+  // Em produção (Cloud Run): frontend é buildado e copiado para backend/public/app
+  app.get('/', (req, res) => {
+    if (req.path === '/' && !req.path.startsWith('/api')) {
+      const isDevelopment = process.env.NODE_ENV !== 'production';
+      res.json({ 
+        message: 'Servidor Larroudé RFID funcionando!',
+        mode: isDevelopment ? 'development' : 'production',
+        note: isDevelopment 
+          ? 'Frontend rodando separadamente em http://localhost:3000 (modo desenvolvimento)'
+          : 'Frontend não encontrado. Execute "npm run build" no frontend para servir a interface.'
+      });
+    }
+  });
+  const isDevelopment = process.env.NODE_ENV !== 'production';
+  console.log(`[INIT] ${isDevelopment ? '✅' : '⚠️'} Modo: ${isDevelopment ? 'DESENVOLVIMENTO' : 'PRODUÇÃO'}`);
+  console.log(`[INIT] ${isDevelopment ? 'Frontend rodando separadamente na porta 3000' : 'Frontend não encontrado - servindo apenas API'}`);
+  if (!isDevelopment) {
+    console.log(`[INIT] Procurou frontend em: ${indexPath}`);
+  }
+}
+
 // Iniciar servidor com tratamento de erros robusto
 console.log('[STARTUP] Iniciando servidor...');
 console.log(`[STARTUP] PORT=${PORT}`);
@@ -6532,7 +6624,25 @@ function startServer() {
     
     // Tratar erros de conexão do cliente (não devem derrubar o servidor)
     server.on('clientError', (error, socket) => {
-      console.warn('[SERVER] ⚠️ Erro de cliente HTTP:', error.message);
+      // Filtrar erros comuns que são normais (timeouts, conexões fechadas pelo cliente, etc.)
+      const errorMessage = error.message || '';
+      const isNormalError = 
+        errorMessage.includes('timeout') ||
+        errorMessage.includes('ECONNRESET') ||
+        errorMessage.includes('EPIPE') ||
+        errorMessage.includes('socket hang up') ||
+        errorMessage.includes('read ECONNRESET');
+      
+      // Apenas logar se não for um erro normal (para não poluir os logs)
+      if (!isNormalError) {
+        console.warn('[SERVER] ⚠️ Erro de cliente HTTP:', error.message);
+      } else {
+        // Log apenas em modo debug (opcional)
+        if (process.env.DEBUG_CLIENT_ERRORS === 'true') {
+          console.log('[SERVER] [DEBUG] Cliente desconectou normalmente:', error.message);
+        }
+      }
+      
       // Fechar a conexão do cliente, mas não derrubar o servidor
       if (socket.writable) {
         socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
@@ -6549,8 +6659,10 @@ function startServer() {
 }
 
 // Iniciar API Python Image Proxy ANTES do servidor iniciar
+// A API Python sempre inicia junto com o backend (local e Cloud Run)
 (async () => {
   try {
+    // Iniciar API Python sempre que possível (local e Cloud Run)
     if (imageProxyStarter && process.env.AUTO_START_IMAGE_PROXY !== 'false') {
       console.log('[STARTUP] Iniciando API Python Image Proxy antes do servidor...');
       
@@ -6624,6 +6736,17 @@ function startServer() {
     startServer();
   } catch (startError) {
     console.error('[STARTUP] ❌ Erro fatal ao iniciar servidor:', startError.message);
+    // Não fazer process.exit - deixar o nodemon gerenciar o restart
+  }
+}).then(() => {
+  // Garantir que o servidor foi iniciado mesmo se a API Python falhar
+  if (!server) {
+    console.warn('[STARTUP] ⚠️ Servidor não foi iniciado, tentando iniciar agora...');
+    try {
+      startServer();
+    } catch (startError) {
+      console.error('[STARTUP] ❌ Erro ao iniciar servidor:', startError.message);
+    }
   }
 });
 

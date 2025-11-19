@@ -79,8 +79,9 @@ COPY --from=frontend-builder /app/frontend/build ./backend/public/app
 # Copy templates and layouts from project root
 # Templates are loaded from ../templates/ relative to backend/server.js
 # Layouts are loaded from backend/layouts/
+# Note: layouts já estão incluídos em backend/ copiado acima, mas copiamos templates separadamente
 COPY templates/ ./templates/
-COPY backend/layouts/ ./backend/layouts/
+# Layouts já estão em ./backend/layouts/ (copiados com COPY --from=backend-deps /app/backend ./backend)
 
 # Optional: create non-root user for better security
 RUN groupadd -r nodejs && useradd -r -g nodejs nodejs

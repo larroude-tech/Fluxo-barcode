@@ -348,16 +348,16 @@ try {
   Promise.resolve().then(async () => {
     try {
       await pool.query('SELECT 1');
-      console.log('[DB] ✅ Teste de conexão bem-sucedido');
-      
-      // Refresh automático da view na inicialização
-      try {
-        await refreshDatabaseView(pool);
-      } catch (refreshError) {
-        console.warn('[DB] ⚠️ Erro ao fazer refresh da view na inicialização (continuando...):', refreshError.message);
-      }
+    console.log('[DB] ✅ Teste de conexão bem-sucedido');
+    
+    // Refresh automático da view na inicialização
+    try {
+      await refreshDatabaseView(pool);
+    } catch (refreshError) {
+      console.warn('[DB] ⚠️ Erro ao fazer refresh da view na inicialização (continuando...):', refreshError.message);
+    }
     } catch (err) {
-      console.warn('[DB] ⚠️ Teste de conexão falhou (continuando...):', err.message);
+    console.warn('[DB] ⚠️ Teste de conexão falhou (continuando...):', err.message);
     }
   }).catch((err) => {
     // Capturar qualquer erro não tratado na promise
@@ -1320,7 +1320,7 @@ async function convertImageToZPL(imageUrl, width = 160, height = 160) {
     // ^GF formato: ^GFa,b,c,d,data^FS
     // a = compression type (A=ASCII hex)
     // b = binary byte count
-    // c = graphic field count (total bytes) 
+    // c = graphic field count (total bytes)
     // d = bytes per row
     // IMPORTANTE: Usar dimensões reais da imagem (pode ser menor que width x height com fit: 'contain')
     const actualWidth = info.width;
@@ -2298,7 +2298,7 @@ app.post('/api/print-individual', async (req, res) => {
             if (workingTemplate.includes('{IMAGE}')) {
               workingTemplate = workingTemplate.replace(/{IMAGE}/g, imageCommand);
               console.log(`[IMAGE] ✅ Imagem inserida no placeholder {IMAGE} na posição (${imageX}, ${imageY})`);
-            } else {
+          } else {
               // Inserir após o segundo ^XA (início da etiqueta)
               const xaMatches = workingTemplate.match(/\^XA/g);
               const xaCount = xaMatches ? xaMatches.length : 0;
@@ -2309,12 +2309,12 @@ app.post('/api/print-individual', async (req, res) => {
                   xaIndex++;
                   return xaIndex === 2 ? `${match}\n${imageCommand}` : match;
                 });
-              } else {
+            } else {
                 workingTemplate = workingTemplate.replace(/^XA/m, `^XA\n${imageCommand}`);
-              }
-              console.log(`[IMAGE] ✅ Imagem inserida na posição (${imageX}, ${imageY})`);
             }
-            
+              console.log(`[IMAGE] ✅ Imagem inserida na posição (${imageX}, ${imageY})`);
+          }
+
             // Verificação final
             if (workingTemplate.includes('^GFA')) {
               console.log(`[IMAGE] ✅ Imagem confirmada no template antes das substituições de variáveis`);
@@ -2343,8 +2343,8 @@ app.post('/api/print-individual', async (req, res) => {
               preservedImageCommand = imageMatch[0];
               console.log(`[IMAGE] ✅ Comando da imagem preservado antes da remoção de RFID: ${preservedImageCommand.substring(0, 100)}...`);
             }
-          }
-
+            }
+            
           // REMOVER COMANDOS RFID ANTES DE SUBSTITUIR VARIÁVEIS
           // Comandos RFID (^RFW, ^RFR, ^RFI, etc.) podem causar "void" na etiqueta quando não conseguem gravar
           // Remover completamente para evitar problemas durante testes
@@ -2378,7 +2378,7 @@ app.post('/api/print-individual', async (req, res) => {
               console.log(`[IMAGE] ✅ Imagem restaurada após remoção de RFID (único ^XA)`);
             }
           }
-          
+
           // Substituir variáveis no template com dados sequenciais
           let workingZPL = workingTemplate
             .replace(/{STYLE_NAME}/g, styleName)
@@ -2565,18 +2565,18 @@ app.post('/api/print-individual', async (req, res) => {
               throw new Error(printResult.error || 'Erro desconhecido ao imprimir');
             }
           } else {
-            results.push({
-              item: `${styleName} (${seq}/${itemQty})`,
-              barcode: sequentialBarcode,
-              rfid: rfidContent,
-              success: printResult.success,
-              message: printResult.success ? `Etiqueta ${seq} impressa com sucesso` : printResult.error,
-              details: printResult.result
-            });
-            
-            console.log(`[OK] Etiqueta ${styleName} ${seq}/${itemQty} processada:`, printResult.success ? 'OK' : printResult.error);
-            console.log(`   [DATA] Barcode: ${sequentialBarcode}`);
-            console.log(`   [RFID] RFID String Direta: ${rfidContent}`);
+          results.push({
+            item: `${styleName} (${seq}/${itemQty})`,
+            barcode: sequentialBarcode,
+            rfid: rfidContent,
+            success: printResult.success,
+            message: printResult.success ? `Etiqueta ${seq} impressa com sucesso` : printResult.error,
+            details: printResult.result
+          });
+          
+          console.log(`[OK] Etiqueta ${styleName} ${seq}/${itemQty} processada:`, printResult.success ? 'OK' : printResult.error);
+          console.log(`   [DATA] Barcode: ${sequentialBarcode}`);
+          console.log(`   [RFID] RFID String Direta: ${rfidContent}`);
           }
           
         } catch (error) {
@@ -2924,7 +2924,7 @@ app.post('/api/print-all', async (req, res) => {
               // Inserir após o segundo ^XA (início da etiqueta)
               const xaMatches = workingTemplate.match(/\^XA/g);
               const xaCount = xaMatches ? xaMatches.length : 0;
-              
+          
               if (xaCount >= 2) {
                 let xaIndex = 0;
                 workingTemplate = workingTemplate.replace(/\^XA/g, (match) => {
@@ -2970,7 +2970,7 @@ app.post('/api/print-all', async (req, res) => {
           workingTemplate = workingTemplate.replace(/\^RFT[^\^]*\^FS/g, ''); // Remove ^RFT
           workingTemplate = workingTemplate.replace(/\^RFU[^\^]*\^FS/g, ''); // Remove ^RFU
           console.log(`[RFID] ✅ Comandos RFID removidos do template para evitar "void" durante testes (print-all)`);
-          
+            
           // RESTAURAR IMAGEM SE FOI REMOVIDA ACIDENTALMENTE (print-all)
           if (preservedImageCommand && !workingTemplate.includes('^GFA')) {
             console.log(`[IMAGE] ⚠️ Imagem foi removida acidentalmente, restaurando... (print-all)`);
@@ -2992,7 +2992,7 @@ app.post('/api/print-all', async (req, res) => {
               console.log(`[IMAGE] ✅ Imagem restaurada após remoção de RFID (único ^XA) (print-all)`);
             }
           }
-          
+
           // Substituir variáveis no template com dados sequenciais
           let workingZPL = workingTemplate
             .replace(/{STYLE_NAME}/g, styleName)
@@ -3177,16 +3177,16 @@ app.post('/api/print-all', async (req, res) => {
               throw new Error(printResult.error || 'Erro desconhecido ao imprimir');
             }
           } else {
-            results.push({
-              item: `${styleName} (${seq}/${itemQty})`,
-              barcode: sequentialBarcode,
-              rfid: rfidContent,
-              success: printResult.success,
-              message: printResult.success ? `Etiqueta ${seq} impressa com sucesso` : printResult.error,
-              details: printResult.result
-            });
-            
-            console.log(`[OK] Etiqueta ${styleName} ${seq}/${itemQty} processada:`, printResult.success ? 'OK' : printResult.error);
+          results.push({
+            item: `${styleName} (${seq}/${itemQty})`,
+            barcode: sequentialBarcode,
+            rfid: rfidContent,
+            success: printResult.success,
+            message: printResult.success ? `Etiqueta ${seq} impressa com sucesso` : printResult.error,
+            details: printResult.result
+          });
+          
+          console.log(`[OK] Etiqueta ${styleName} ${seq}/${itemQty} processada:`, printResult.success ? 'OK' : printResult.error);
           }
           
           // Aguardar um pouco entre impressões para não sobrecarregar a impressora
@@ -3827,7 +3827,7 @@ async function generateLabelPreview(item) {
         imageX = Math.round((imageLayout.x || 0) * 80);
         imageY = Math.round((imageLayout.y || 0) * 80);
         console.log(`[IMAGE] [PREVIEW] Layout productImage detectado (em cm): ${imageLayout.width}x${imageLayout.height} -> convertido para ${imageWidth}x${imageHeight} dots`);
-      }
+        }
       
       if (imageWidth < 80 || imageHeight < 80) {
         console.warn(`[IMAGE] [PREVIEW] ⚠️ Tamanho muito pequeno detectado: ${imageWidth}x${imageHeight} dots. Aplicando tamanho mínimo de 80x80 dots.`);
@@ -3902,7 +3902,7 @@ async function generateLabelPreview(item) {
             const xaMatches = baseTemplate.match(/\^XA/g);
             const xaCount = xaMatches ? xaMatches.length : 0;
             console.log(`[IMAGE] [DEBUG] [PREVIEW] Template contém ${xaCount} comandos ^XA`);
-            
+        
             // Se houver múltiplos ^XA, inserir após o segundo (início da etiqueta)
             // Se houver apenas um, inserir após ele
             let beforeReplace = baseTemplate;
@@ -6477,48 +6477,95 @@ app.use((req, res, next) => {
 const frontendPath = path.join(__dirname, 'public', 'app');
 const indexPath = path.join(frontendPath, 'index.html');
 
+// Logs detalhados para debug
+console.log('[INIT] Verificando frontend...');
+console.log(`[INIT] __dirname: ${__dirname}`);
+console.log(`[INIT] Frontend path: ${frontendPath}`);
+console.log(`[INIT] Index path: ${indexPath}`);
+console.log(`[INIT] Index exists: ${fs.existsSync(indexPath)}`);
+
+// Verificar se o diretório public/app existe
+const publicAppExists = fs.existsSync(frontendPath);
+console.log(`[INIT] Public/app directory exists: ${publicAppExists}`);
+
+if (publicAppExists) {
+  // Listar arquivos no diretório para debug
+  try {
+    const files = fs.readdirSync(frontendPath);
+    console.log(`[INIT] Arquivos em public/app: ${files.slice(0, 10).join(', ')}${files.length > 10 ? '...' : ''}`);
+  } catch (err) {
+    console.log(`[INIT] Erro ao listar arquivos: ${err.message}`);
+  }
+}
+
 // Verificar se o frontend existe (pode não existir em desenvolvimento local)
 const frontendExists = fs.existsSync(indexPath);
 
 if (frontendExists) {
   // Servir arquivos estáticos do frontend (JS, CSS, imagens, etc.)
-  app.use(express.static(frontendPath));
+  // Usar caminho absoluto para garantir que funcione no Cloud Run
+  const absoluteFrontendPath = path.resolve(frontendPath);
+  const absoluteIndexPath = path.resolve(indexPath);
+  
+  console.log(`[INIT] Absolute frontend path: ${absoluteFrontendPath}`);
+  console.log(`[INIT] Absolute index path: ${absoluteIndexPath}`);
+  
+  app.use(express.static(absoluteFrontendPath));
   
   // Para todas as rotas que não começam com /api ou /health, servir o index.html (SPA fallback)
   // Isso permite que o React Router funcione corretamente
+  // IMPORTANTE: Esta rota deve ser a ÚLTIMA rota registrada
   app.get('*', (req, res) => {
     // Excluir rotas de API e health check
     if (req.path.startsWith('/api') || req.path === '/health') {
       return res.status(404).json({ error: 'Endpoint not found' });
     }
     // Caso contrário, servir o index.html do React
-    res.sendFile(indexPath);
+    console.log(`[FRONTEND] Servindo index.html para: ${req.path}`);
+    res.sendFile(absoluteIndexPath, (err) => {
+      if (err) {
+        console.error(`[FRONTEND] Erro ao servir index.html: ${err.message}`);
+        console.error(`[FRONTEND] Stack: ${err.stack}`);
+        if (!res.headersSent) {
+          res.status(500).send('Erro ao carregar frontend');
+        }
+      }
+    });
   });
   
   console.log('[INIT] ✅ Frontend React configurado para servir em /');
-  console.log(`[INIT] Frontend path: ${frontendPath}`);
+  console.log(`[INIT] Frontend path: ${absoluteFrontendPath}`);
 } else {
   // Em desenvolvimento local: frontend roda separado na porta 3000 (React dev server)
   // Backend apenas serve API na porta 3005
   // Em produção (Cloud Run): frontend é buildado e copiado para backend/public/app
-  app.get('/', (req, res) => {
-    if (req.path === '/' && !req.path.startsWith('/api')) {
-      const isDevelopment = process.env.NODE_ENV !== 'production';
-      res.json({ 
-        message: 'Servidor Larroudé RFID funcionando!',
-        mode: isDevelopment ? 'development' : 'production',
-        note: isDevelopment 
-          ? 'Frontend rodando separadamente em http://localhost:3000 (modo desenvolvimento)'
-          : 'Frontend não encontrado. Execute "npm run build" no frontend para servir a interface.'
-      });
-    }
-  });
   const isDevelopment = process.env.NODE_ENV !== 'production';
   console.log(`[INIT] ${isDevelopment ? '✅' : '⚠️'} Modo: ${isDevelopment ? 'DESENVOLVIMENTO' : 'PRODUÇÃO'}`);
   console.log(`[INIT] ${isDevelopment ? 'Frontend rodando separadamente na porta 3000' : 'Frontend não encontrado - servindo apenas API'}`);
   if (!isDevelopment) {
-    console.log(`[INIT] Procurou frontend em: ${indexPath}`);
+    console.log(`[INIT] ⚠️ Frontend não encontrado em: ${indexPath}`);
+    console.log(`[INIT] ⚠️ Verifique se o frontend foi buildado e copiado para backend/public/app`);
   }
+  
+  // Em produção sem frontend, servir mensagem JSON na raiz
+  // Mas ainda permitir que outras rotas funcionem
+  app.get('/', (req, res) => {
+    if (!isDevelopment) {
+      res.json({ 
+        message: 'Servidor Larroudé RFID funcionando!',
+        mode: 'production',
+        note: 'Frontend não encontrado. Verifique se o frontend foi buildado e copiado para backend/public/app',
+        frontendPath: frontendPath,
+        indexPath: indexPath
+      });
+    } else {
+      res.json({ 
+        message: 'Servidor Larroudé RFID funcionando!',
+        mode: 'development',
+        note: 'Frontend rodando separadamente em http://localhost:3000'
+      });
+    }
+  });
 }
 
 // Iniciar servidor com tratamento de erros robusto
@@ -6594,12 +6641,12 @@ function checkAndClearPort(port) {
 function startServer() {
   // Verificar e limpar porta antes de iniciar
   checkAndClearPort(PORT);
-  try {
-    server = app.listen(PORT, '0.0.0.0', () => {
-      console.log(`✅ Servidor rodando na porta ${PORT}`);
-      console.log(`✅ Servidor escutando em 0.0.0.0:${PORT}`);
-      console.log(`✅ Health check disponível em http://0.0.0.0:${PORT}/health`);
-    });
+try {
+  server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`✅ Servidor rodando na porta ${PORT}`);
+    console.log(`✅ Servidor escutando em 0.0.0.0:${PORT}`);
+    console.log(`✅ Health check disponível em http://0.0.0.0:${PORT}/health`);
+  });
 
     server.on('listening', () => {
       console.log('✅ Servidor está escutando!');
@@ -6607,9 +6654,9 @@ function startServer() {
     });
     
     // Tratar erros do servidor de forma mais robusta (não encerrar o processo)
-    server.on('error', (error) => {
+  server.on('error', (error) => {
       console.error('❌ Erro no servidor HTTP:', error.message);
-      console.error('❌ Stack:', error.stack);
+    console.error('❌ Stack:', error.stack);
       
       // Se for erro de porta em uso, tentar limpar e reiniciar
       if (error.code === 'EADDRINUSE') {
@@ -6748,10 +6795,10 @@ function startServer() {
       console.error('[STARTUP] ❌ Erro ao iniciar servidor:', startError.message);
     }
   }
-});
+  });
 
-// Garantir que o processo não termine silenciosamente
-process.on('uncaughtException', (error) => {
+  // Garantir que o processo não termine silenciosamente
+  process.on('uncaughtException', (error) => {
     console.error('❌ Erro não capturado:', error);
     console.error('❌ Stack:', error.stack);
     
@@ -6772,7 +6819,7 @@ process.on('uncaughtException', (error) => {
       error.message.includes('listen')
     )) {
       console.error('❌ Erro crítico de porta, encerrando...');
-      process.exit(1);
+    process.exit(1);
     } else {
       console.warn('⚠️ Erro não crítico, continuando execução...');
       // Não encerrar o processo - deixar o nodemon gerenciar
@@ -6810,7 +6857,7 @@ process.on('SIGTERM', () => {
     }
   });
 
-process.on('unhandledRejection', (reason, promise) => {
+  process.on('unhandledRejection', (reason, promise) => {
     console.error('❌ Promise rejeitada não tratada:', reason);
     if (reason && reason.stack) {
       console.error('❌ Stack:', reason.stack);
@@ -6837,6 +6884,6 @@ process.on('unhandledRejection', (reason, promise) => {
     }
   });
 
-console.log('[STARTUP] Servidor configurado com sucesso');
+  console.log('[STARTUP] Servidor configurado com sucesso');
 
 module.exports = app;

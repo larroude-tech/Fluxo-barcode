@@ -1,0 +1,161 @@
+name: Extrair Google Drive para o repositório
+
+on:
+  workflow_dispatch: # permite rodar manualmente
+  schedule:
+    - cron: "0 6 * * *" # opcional: todos os dias às 06:00 UTC
+
+permissions:
+  contents: write # necessário para comitar alterações
+
+jobs:
+  sync-drive-to-repo:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Instalar rclone e jq
+        run: |
+          sudo -n apt-get update
+          sudo -n apt-get install -y rclone jq
+
+      - name: Validar e escrever chave da Service Account
+        run: |
+          echo "🔍 Verificando configuração do secret..."
+          
+          # Determinar qual secret usar (com fallback para GCP_SA_KEY)
+          SA_JSON=""
+          if [ -n "${GDRIVE_SERVICE_ACCOUNT_JSON}" ] && [ "${GDRIVE_SERVICE_ACCOUNT_JSON}" != "" ]; then
+            echo "📦 Usando secret: GDRIVE_SERVICE_ACCOUNT_JSON"
+            SA_JSON="${GDRIVE_SERVICE_ACCOUNT_JSON}"
+          elif [ -n "${GCP_SA_KEY}" ] && [ "${GCP_SA_KEY}" != "" ]; then
+            echo "📦 Usando secret: GCP_SA_KEY (fallback)"
+            SA_JSON="${GCP_SA_KEY}"
+          else
+            echo "❌ ERRO: Nenhum secret encontrado!"
+            echo "   GDRIVE_SERVICE_ACCOUNT_JSON: $([ -z "${GDRIVE_SERVICE_ACCOUNT_JSON}" ] && echo 'vazio' || echo 'configurado')"
+            echo "   GCP_SA_KEY: $([ -z "${GCP_SA_KEY}" ] && echo 'vazio' || echo 'configurado')"
+            echo ""
+            echo "📝 Para corrigir:"
+            echo "   1. Vá em Settings → Secrets and variables → Actions"
+            echo "   2. Verifique que o secret GCP_SA_KEY está configurado"
+            echo "   3. Deve conter o conteúdo COMPLETO do arquivo JSON da service account"
+            echo "   4. O JSON deve começar com '{' e terminar com '}'"
+            exit 1
+          fi
+          
+          # Verificar tamanho mínimo (JSON válido deve ter pelo menos alguns caracteres)
+          LENGTH=$(echo -n "${SA_JSON}" | wc -c)
+          if [ "$LENGTH" -lt 100 ]; then
+            echo "❌ ERRO: O secret parece estar muito curto (${LENGTH} caracteres)"
+            echo "   Um JSON válido deve ter pelo menos 100 caracteres"
+            echo "   Primeiros 50 caracteres: $(echo -n "${SA_JSON}" | head -c 50)..."
+            exit 1
+          fi
+          
+          echo "✅ Secret encontrado (${LENGTH} caracteres)"
+          
+          # Validar se é um JSON válido
+          if ! echo "${SA_JSON}" | jq . > /dev/null 2>&1; then
+            echo "❌ ERRO: O JSON da service account não é válido"
+            echo "   Erro ao parsear JSON"
+            echo ""
+            echo "📋 Debug - Primeiras 200 caracteres:"
+            echo "${SA_JSON}" | head -c 200
+            echo ""
+            exit 1
+          fi
+          
+          echo "✅ JSON válido"
+          
+          # Escrever arquivo da service account usando printf para evitar problemas com caracteres especiais
+          printf '%s' "${SA_JSON}" > /home/runner/work/service-account.json
+          
+          # Validar que o arquivo foi criado corretamente
+          if [ ! -f /home/runner/work/service-account.json ]; then
+            echo "❌ ERRO: Falha ao criar arquivo service-account.json"
+            exit 1
+          fi
+          
+          # Verificar tamanho do arquivo
+          FILE_SIZE=$(stat -c%s /home/runner/work/service-account.json 2>/dev/null || stat -f%z /home/runner/work/service-account.json 2>/dev/null || echo "0")
+          if [ "$FILE_SIZE" -eq 0 ]; then
+            echo "❌ ERRO: Arquivo service-account.json está vazio"
+            exit 1
+          fi
+          
+          echo "✅ Arquivo criado (${FILE_SIZE} bytes)"
+          
+          # Validar JSON novamente após escrever no arquivo
+          if ! jq . /home/runner/work/service-account.json > /dev/null 2>&1; then
+            echo "❌ ERRO: JSON inválido após escrever no arquivo"
+            echo "   Arquivo pode ter sido corrompido"
+            exit 1
+          fi
+          
+          # Verificar se contém campos obrigatórios
+          if ! grep -q '"type"' /home/runner/work/service-account.json || ! grep -q '"project_id"' /home/runner/work/service-account.json; then
+            echo "❌ ERRO: JSON da service account parece estar incompleto"
+            echo "   Deve conter os campos: type, project_id"
+            echo ""
+            echo "📋 Campos encontrados no JSON:"
+            jq 'keys' /home/runner/work/service-account.json || echo "Não foi possível listar campos"
+            exit 1
+          fi
+          
+          echo "✅ Service account JSON validado e salvo com sucesso"
+        env:
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Criar config do rclone (Drive via Service Account)
+        run: |
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf << 'EOF'
+          [gdrive]
+          type = drive
+          scope = drive
+          service_account_file = /home/runner/work/service-account.json
+          # root_folder_id aponta a pasta que você compartilhou
+          root_folder_id = 1F22HTbcjiLDcIlVWnEqOn3JRgznWZ80K
+          EOF
+
+      - name: Sincronizar do Drive para pasta local
+        run: |
+          mkdir -p images
+
+          # Sincronizar imagens e outros arquivos do Google Drive
+          # O rclone baixa arquivos nativos (imagens, PDFs, etc.) diretamente
+          # Para Google Docs/Sheets, pode exportar se necessário
+          EXPORTS="png,jpg,jpeg,gif,webp,pdf,svg"
+
+          rclone sync gdrive: images \
+            --drive-root-folder-id "1F22HTbcjiLDcIlVWnEqOn3JRgznWZ80K" \
+            --drive-export-formats "${EXPORTS}" \
+            --create-empty-src-dirs \
+            --checksum \
+            --fast-list \
+            --transfers=8 \
+            --checkers=16 \
+            --verbose \
+            --progress
+
+      - name: Normalizar permissões (evita ruído no git)
+        run: |
+          git config core.fileMode false
+
+      - name: Commit e push (se houver mudanças)
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add -A
+            TS=$(date -u +"%Y-%m-%d %H:%M:%SZ")
+            git commit -m "chore: sync do Google Drive → repo (${TS})"
+            git push
+          else
+            echo "Sem mudanças para comitar."
+          fi
+

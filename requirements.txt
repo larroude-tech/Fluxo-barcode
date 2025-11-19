@@ -1,4 +1,4 @@
-pywin32==306
+# pywin32==306  # Removido: específico do Windows, não funciona no Linux/Docker
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 requests==2.31.0

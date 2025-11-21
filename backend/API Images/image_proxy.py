@@ -13,7 +13,36 @@ from dotenv import load_dotenv
 # =======================
 # Carregar .env da raiz do projeto (2 níveis acima: backend/API Images/ -> backend/ -> raiz)
 env_path = Path(__file__).parent.parent.parent / '.env'
-load_dotenv(env_path)
+
+# Tentar carregar .env com tratamento de encoding
+def load_env_safe(env_path):
+    """Carrega .env com tratamento de encoding"""
+    try:
+        # Tentar carregar normalmente
+        load_dotenv(env_path)
+    except UnicodeDecodeError as e:
+        # Se falhar, tentar diferentes encodings
+        encodings = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']
+        for encoding in encodings:
+            try:
+                with open(env_path, 'r', encoding=encoding) as f:
+                    content = f.read()
+                # Recriar arquivo com UTF-8
+                with open(env_path, 'w', encoding='utf-8', newline='\n') as f:
+                    f.write(content)
+                # Tentar carregar novamente
+                load_dotenv(env_path)
+                print(f"[IMAGE-PROXY] Arquivo .env convertido de {encoding} para UTF-8")
+                return
+            except Exception:
+                continue
+        # Se todos falharem, mostrar erro
+        print(f"[IMAGE-PROXY] [ERRO] Não foi possível ler .env com nenhum encoding")
+        print(f"[IMAGE-PROXY] [ERRO] Caminho: {env_path}")
+        print(f"[IMAGE-PROXY] [ERRO] Erro original: {e}")
+        raise
+
+load_env_safe(env_path)
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 OWNER = "larroude-tech"

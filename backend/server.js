@@ -218,6 +218,39 @@ const createDatabasePool = () => {
  * Função para fazer refresh da view do banco de dados
  * Detecta automaticamente se é view normal ou materializada
  */
+const createPrintLogTable = async (pool) => {
+  if (!pool) {
+    console.log('[DB] [PRINT-LOG] Pool não disponível, pulando criação da tabela');
+    return;
+  }
+
+  try {
+    console.log('[DB] [PRINT-LOG] Criando/verificando tabela de log de impressões...');
+    
+    await pool.query(`
+      CREATE SCHEMA IF NOT EXISTS senda;
+      
+      CREATE TABLE IF NOT EXISTS senda.print_log (
+        id SERIAL PRIMARY KEY,
+        epc_id VARCHAR(24) NOT NULL,
+        barcode VARCHAR(50),
+        vpn VARCHAR(100),
+        po VARCHAR(50),
+        sequence INTEGER,
+        printed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(epc_id)
+      );
+      
+      CREATE INDEX IF NOT EXISTS idx_print_log_epc_id ON senda.print_log(epc_id);
+      CREATE INDEX IF NOT EXISTS idx_print_log_printed_at ON senda.print_log(printed_at);
+    `);
+    
+    console.log('[DB] [PRINT-LOG] ✅ Tabela de log de impressões verificada/criada com sucesso');
+  } catch (error) {
+    console.warn('[DB] [PRINT-LOG] ⚠️ Erro ao criar tabela de log (continuando...):', error.message);
+  }
+};
+
 const refreshDatabaseView = async (pool) => {
   if (!pool) {
     console.log('[DB] [REFRESH] Pool não disponível, pulando refresh');
@@ -350,11 +383,11 @@ try {
       await pool.query('SELECT 1');
     console.log('[DB] ✅ Teste de conexão bem-sucedido');
     
-    // Refresh automático da view na inicialização
+    // Criar tabela de log de impressões na inicialização
     try {
-      await refreshDatabaseView(pool);
-    } catch (refreshError) {
-      console.warn('[DB] ⚠️ Erro ao fazer refresh da view na inicialização (continuando...):', refreshError.message);
+      await createPrintLogTable(pool);
+    } catch (logTableError) {
+      console.warn('[DB] ⚠️ Erro ao criar tabela de log na inicialização (continuando...):', logTableError.message);
     }
     } catch (err) {
     console.warn('[DB] ⚠️ Teste de conexão falhou (continuando...):', err.message);
@@ -778,6 +811,618 @@ async function processProductImage(imageUrl, layout, context = '') {
   }
   
   return { imageX, imageY, imageWidth, imageHeight, imageZPL };
+}
+
+/**
+ * Gera um QR code com logo no centro
+ * @param {string} data - Dados para o QR code
+ * @param {number} size - Tamanho do QR code em pixels (padrão: 200)
+ * @param {string} logoPath - Caminho para o logo (padrão: backend/image_qrcode/L_logo.png)
+ * @returns {Promise<Buffer>} - Buffer da imagem do QR code com logo
+ */
+async function generateQRCodeWithLogo(data, size = 200, logoPath = null, saveToFile = true, referencia = null, poNumber = null) {
+  try {
+    // Estrutura de pastas: Generator (arquivos de geração) e Generated (QR codes gerados)
+    const imageQrCodeDir = path.join(__dirname, 'image_qrcode');
+    const generatorDir = path.join(imageQrCodeDir, 'Generator');
+    const generatedDir = path.join(imageQrCodeDir, 'Generated');
+    
+    // Criar pastas se não existirem
+    if (!fs.existsSync(generatorDir)) {
+      fs.mkdirSync(generatorDir, { recursive: true });
+      console.log(`[QR-LOGO] Pasta Generator criada: ${generatorDir}`);
+    }
+    if (!fs.existsSync(generatedDir)) {
+      fs.mkdirSync(generatedDir, { recursive: true });
+      console.log(`[QR-LOGO] Pasta Generated criada: ${generatedDir}`);
+    }
+    
+    // Caminho padrão do logo (agora em Generator)
+    if (!logoPath) {
+      // Tentar primeiro em Generator
+      logoPath = path.join(generatorDir, 'L_logo.png');
+      console.log(`[QR-LOGO] Procurando logo em: ${logoPath}`);
+      
+      // Se não existir em Generator, tentar na pasta antiga (para migração)
+      if (!fs.existsSync(logoPath)) {
+        console.log(`[QR-LOGO] Logo não encontrado em Generator, tentando pasta antiga...`);
+        const oldLogoPath = path.join(imageQrCodeDir, 'L_logo.png');
+        console.log(`[QR-LOGO] Procurando logo em: ${oldLogoPath}`);
+        
+        if (fs.existsSync(oldLogoPath)) {
+          // Copiar logo para Generator se não existir
+          if (!fs.existsSync(generatorDir)) {
+            fs.mkdirSync(generatorDir, { recursive: true });
+          }
+          fs.copyFileSync(oldLogoPath, logoPath);
+          console.log(`[QR-LOGO] ✅ Logo copiado para Generator: ${logoPath}`);
+        } else {
+          console.error(`[QR-LOGO] ❌ Logo não encontrado em nenhum dos locais!`);
+          console.error(`[QR-LOGO] Tentou: ${logoPath}`);
+          console.error(`[QR-LOGO] Tentou: ${oldLogoPath}`);
+        }
+      } else {
+        console.log(`[QR-LOGO] ✅ Logo encontrado em Generator: ${logoPath}`);
+      }
+    } else {
+      console.log(`[QR-LOGO] Usando logoPath fornecido: ${logoPath}`);
+    }
+    
+    // Estrutura de pastas: Generated/{PO}/{VPN}/qrcode_{size}.png
+    // Se temos PO e VPN, verificar cache primeiro
+    if (poNumber && referencia && saveToFile) {
+      // Normalizar PO: remover caracteres especiais e garantir formato consistente
+      const poNormalized = String(poNumber || '0000').replace(/[^0-9A-Za-z]/g, '').toUpperCase() || '0000';
+      const vpnNormalized = String(referencia || '').replace(/[^0-9A-Za-z\-_]/g, '') || 'N/A';
+      
+      // Criar estrutura: Generated/{PO}/{VPN}/
+      const poDir = path.join(generatedDir, poNormalized);
+      const vpnDir = path.join(poDir, vpnNormalized);
+      const cachedFilePath = path.join(vpnDir, `qrcode_${size}.png`);
+      
+      if (fs.existsSync(cachedFilePath)) {
+        console.log(`[QR-LOGO] ✅ QR code encontrado em cache: ${cachedFilePath}`);
+        const cachedBuffer = fs.readFileSync(cachedFilePath);
+        const stats = fs.statSync(cachedFilePath);
+        console.log(`[QR-LOGO] Cache: ${cachedBuffer.length} bytes, modificado em: ${stats.mtime}`);
+        
+        // Verificar dimensões do QR code em cache
+        const cachedMetadata = await sharp(cachedBuffer).metadata();
+        console.log(`[QR-LOGO] Cache: Dimensões do QR code = ${cachedMetadata.width}x${cachedMetadata.height}px`);
+        console.log(`[QR-LOGO] Cache: Tamanho desejado = ${size} dots`);
+        
+        // Verificar se o QR code em cache está no tamanho correto
+        if (cachedMetadata.width === size && cachedMetadata.height === size) {
+          console.log(`[QR-LOGO] Cache: QR code já está no tamanho correto (${size}x${size}px), retornando diretamente`);
+          return cachedBuffer;
+        } else {
+          // Tamanho diferente, redimensionar
+          console.log(`[QR-LOGO] Cache: QR code será redimensionado de ${cachedMetadata.width}x${cachedMetadata.height}px para ${size}x${size}px`);
+          const resizedBuffer = await sharp(cachedBuffer)
+            .resize(size, size, {
+              kernel: 'nearest',
+              fit: 'fill'
+            })
+            .png()
+            .toBuffer();
+          
+          // Salvar versão redimensionada para cache futuro
+          fs.writeFileSync(cachedFilePath, resizedBuffer);
+          console.log(`[QR-LOGO] Cache: QR code redimensionado e salvo em: ${cachedFilePath}`);
+          return resizedBuffer;
+        }
+      } else {
+        console.log(`[QR-LOGO] ⚠️ QR code NÃO encontrado em cache: ${cachedFilePath}`);
+        console.log(`[QR-LOGO] Vai gerar novo QR code...`);
+      }
+    } else if (referencia && saveToFile) {
+      // Fallback: se não tiver PO, usar estrutura antiga (Generated/{VPN}/)
+      console.log(`[QR-LOGO] ⚠️ PO não fornecido, usando estrutura antiga (Generated/{VPN}/)`);
+      const referenciaDir = path.join(generatedDir, referencia);
+      const cachedFilePath = path.join(referenciaDir, `qrcode_${size}.png`);
+      
+      if (fs.existsSync(cachedFilePath)) {
+        console.log(`[QR-LOGO] ✅ QR code encontrado em cache (estrutura antiga): ${cachedFilePath}`);
+        const cachedBuffer = fs.readFileSync(cachedFilePath);
+        const stats = fs.statSync(cachedFilePath);
+        console.log(`[QR-LOGO] Cache: ${cachedBuffer.length} bytes, modificado em: ${stats.mtime}`);
+        
+        const cachedMetadata = await sharp(cachedBuffer).metadata();
+        if (cachedMetadata.width === size && cachedMetadata.height === size) {
+          return cachedBuffer;
+        } else {
+          const resizedBuffer = await sharp(cachedBuffer)
+            .resize(size, size, { kernel: 'nearest', fit: 'fill' })
+            .png()
+            .toBuffer();
+          fs.writeFileSync(cachedFilePath, resizedBuffer);
+          return resizedBuffer;
+        }
+      }
+    }
+    
+    // Gerar novo QR code
+    console.log(`[QR-LOGO] Gerando QR code do zero (nunca usando imagens existentes)`);
+    
+    // Verificar se o logo existe
+    let logoExists = fs.existsSync(logoPath);
+    console.log(`[QR-LOGO] Verificando logo: ${logoPath}`);
+    console.log(`[QR-LOGO] Logo existe? ${logoExists}`);
+    
+    if (!logoExists) {
+      console.warn(`[QR-LOGO] ⚠️ Logo não encontrado em ${logoPath}, tentando locais alternativos...`);
+      console.warn(`[QR-LOGO] Caminho absoluto tentado: ${path.resolve(logoPath)}`);
+      
+      // Tentar encontrar o logo em outros locais possíveis
+      const possiblePaths = [
+        path.join(imageQrCodeDir, 'L_logo.png'),
+        path.join(generatorDir, 'L_logo.png'),
+        path.join(__dirname, 'image_qrcode', 'L_logo.png'),
+        path.join(__dirname, 'image_qrcode', 'Generator', 'L_logo.png')
+      ];
+      
+      for (const possiblePath of possiblePaths) {
+        console.log(`[QR-LOGO] Tentando: ${possiblePath}`);
+        if (fs.existsSync(possiblePath)) {
+          console.log(`[QR-LOGO] ✅ Logo encontrado em local alternativo: ${possiblePath}`);
+          logoPath = possiblePath;
+          logoExists = true;
+          break;
+        }
+      }
+      
+      // Verificar novamente após tentar caminhos alternativos
+      if (!logoExists) {
+        console.error(`[QR-LOGO] ❌ Logo não encontrado em nenhum local, continuando sem logo`);
+        console.error(`[QR-LOGO] Locais tentados:`);
+        possiblePaths.forEach(p => console.error(`  - ${p} (existe: ${fs.existsSync(p)})`));
+      } else {
+        console.log(`[QR-LOGO] ✅ Logo encontrado após busca em locais alternativos: ${logoPath}`);
+      }
+    } else {
+      console.log(`[QR-LOGO] ✅ Logo confirmado em: ${logoPath}`);
+    }
+    
+    // 1. SEMPRE gerar QR code novo do zero
+    // IMPORTANTE: Gerar DIRETAMENTE no tamanho final desejado (size x size pixels)
+    // Isso evita problemas de redimensionamento e garante que o QR code funcione corretamente
+    // Nível 'H' permite até 30% de dano/corrupção, suficiente para logo no centro
+    // Usar tamanho mínimo de 200px para garantir qualidade, mas se size for maior, usar size
+    const qrSizePixels = Math.max(200, size); // Mínimo 200px para qualidade, mas usar size se for maior
+    
+    const qrCodeBuffer = await QRCode.toBuffer(data, {
+      errorCorrectionLevel: 'H', // Alto nível de correção (30% de redundância)
+      type: 'png',
+      width: qrSizePixels, // Gerar diretamente no tamanho final (ou mínimo 200px)
+      margin: 4, // Margem maior para melhor leitura
+      color: {
+        dark: '#000000', // Preto
+        light: '#FFFFFF' // Branco
+      }
+    });
+    
+    console.log(`[QR-LOGO] QR code gerado do zero: ${qrSizePixels}x${qrSizePixels}px (tamanho final: ${size}x${size} dots)`);
+    
+    // Se o logo não existir, retornar QR code sem logo (já está no tamanho correto)
+    if (!logoExists) {
+      // QR code já está no tamanho correto (qrSizePixels), só redimensionar se necessário
+      let finalBuffer = qrCodeBuffer;
+      if (qrSizePixels !== size) {
+        console.log(`[QR-LOGO] Redimensionando QR code (sem logo) de ${qrSizePixels}x${qrSizePixels}px para ${size}x${size}px...`);
+        finalBuffer = await sharp(qrCodeBuffer)
+          .resize(size, size, {
+            kernel: 'nearest', // Preservar pixels exatos
+            fit: 'fill'
+          })
+          .png()
+          .toBuffer();
+      }
+      
+      // Salvar QR code sem logo na pasta Generated/{PO}/{VPN}/
+      if (saveToFile) {
+        if (poNumber && referencia) {
+          // Estrutura: Generated/{PO}/{VPN}/
+          const poNormalized = String(poNumber || '0000').replace(/[^0-9A-Za-z]/g, '').toUpperCase() || '0000';
+          const vpnNormalized = String(referencia || '').replace(/[^0-9A-Za-z\-_]/g, '') || 'N/A';
+          const poDir = path.join(generatedDir, poNormalized);
+          const vpnDir = path.join(poDir, vpnNormalized);
+          if (!fs.existsSync(vpnDir)) {
+            fs.mkdirSync(vpnDir, { recursive: true });
+          }
+          const filename = `qrcode_${size}.png`;
+          const filepath = path.join(vpnDir, filename);
+          fs.writeFileSync(filepath, finalBuffer);
+          console.log(`[QR-LOGO] ✅ QR code (sem logo) salvo em: ${filepath} (${size}x${size}px)`);
+        } else if (referencia) {
+          // Fallback: estrutura antiga Generated/{VPN}/
+          const referenciaDir = path.join(generatedDir, referencia);
+          if (!fs.existsSync(referenciaDir)) {
+            fs.mkdirSync(referenciaDir, { recursive: true });
+          }
+          const filename = `qrcode_${size}.png`;
+          const filepath = path.join(referenciaDir, filename);
+          fs.writeFileSync(filepath, finalBuffer);
+          console.log(`[QR-LOGO] ✅ QR code (sem logo) salvo em: ${filepath} (${size}x${size}px)`);
+        } else {
+          const crypto = require('crypto');
+          const hash = crypto.createHash('md5').update(data + Date.now()).digest('hex').substring(0, 8);
+          const timestamp = Date.now();
+          const filename = `qrcode_${hash}_${size}_${timestamp}.png`;
+          const filepath = path.join(generatedDir, filename);
+          fs.writeFileSync(filepath, finalBuffer);
+          console.log(`[QR-LOGO] ✅ QR code (sem logo) salvo em: ${filepath} (${size}x${size}px)`);
+        }
+      }
+      return finalBuffer;
+    }
+    
+    // 2. Obter dimensões do QR Code
+    const qrMetadata = await sharp(qrCodeBuffer).metadata();
+    const qrWidth = qrMetadata.width;
+    const qrHeight = qrMetadata.height;
+    
+    console.log(`[QR-LOGO] QR code: ${qrWidth}x${qrHeight}px`);
+    
+    // 3. Calcular tamanho do logo: 20% do tamanho do QR code (mesma lógica do módulo que funcionou)
+    const logoSize = Math.floor(qrWidth * 0.20);
+    console.log(`[QR-LOGO] Logo será redimensionado para: ${logoSize}x${logoSize}px (20% do QR code)`);
+    
+    // 4. Criar espaço em branco no centro do QR Code
+    // IMPORTANTE: Precisamos sobrescrever os pixels pretos do QR code com branco
+    // A melhor abordagem é criar uma imagem branca do tamanho do QR code,
+    // depois compor o QR code sobre ela, e depois criar o espaço branco no centro
+    console.log(`[QR-LOGO] Criando espaço em branco no centro...`);
+    const whiteAreaSize = logoSize + 10; // Logo + margem de 5px de cada lado
+    const whiteAreaX = Math.floor((qrWidth - whiteAreaSize) / 2);
+    const whiteAreaY = Math.floor((qrHeight - whiteAreaSize) / 2);
+    
+    console.log(`[QR-LOGO] Área branca: ${whiteAreaSize}x${whiteAreaSize}px na posição (${whiteAreaX}, ${whiteAreaY})`);
+    
+    // Abordagem: garantir que o QR code tenha alpha, depois criar espaço branco no centro
+    // Primeiro, garantir que o QR code tenha canal alpha
+    const qrWithAlpha = await sharp(qrCodeBuffer)
+      .ensureAlpha() // Garantir canal alpha
+      .png()
+      .toBuffer();
+    
+    // Criar área branca opaca para o centro
+    const whiteArea = await sharp({
+      create: {
+        width: whiteAreaSize,
+        height: whiteAreaSize,
+        channels: 4,
+        background: { r: 255, g: 255, b: 255, alpha: 1 }
+      }
+    })
+      .png()
+      .toBuffer();
+    
+    // Aplicar área branca no centro
+    // IMPORTANTE: 'dest-over' coloca a imagem de entrada (branco) sobre a de destino (QR code)
+    // Como a área branca é opaca (alpha=1), ela substitui os pixels pretos do QR code
+    const qrWithWhiteArea = await sharp(qrWithAlpha)
+      .composite([{
+        input: whiteArea,
+        top: whiteAreaY,
+        left: whiteAreaX,
+        blend: 'dest-over' // Destino (branco) sobre origem (QR code) - substitui pixels
+      }])
+      .png()
+      .toBuffer();
+    
+    // Verificar se o espaço branco foi criado corretamente (debug)
+    // Extrair um pixel do centro para verificar se é branco
+    try {
+      const centerPixel = await sharp(qrWithWhiteArea)
+        .extract({
+          left: Math.floor(qrWidth / 2),
+          top: Math.floor(qrHeight / 2),
+          width: 1,
+          height: 1
+        })
+        .raw()
+        .toBuffer();
+      
+      const pixelValue = centerPixel[0]; // Valor do pixel (0-255)
+      if (pixelValue > 200) {
+        console.log(`[QR-LOGO] ✅ Espaço em branco criado corretamente (pixel central: ${pixelValue})`);
+      } else {
+        console.warn(`[QR-LOGO] ⚠️ Espaço em branco pode não ter sido criado corretamente (pixel central: ${pixelValue}, esperado > 200)`);
+        console.warn(`[QR-LOGO] ⚠️ Tentando abordagem alternativa com blend 'over'...`);
+        // Tentar novamente com 'over' que pode funcionar melhor
+        qrWithWhiteArea = await sharp(qrWithAlpha)
+          .composite([{
+            input: whiteArea,
+            top: whiteAreaY,
+            left: whiteAreaX,
+            blend: 'over' // Sobrepor com branco opaco
+          }])
+          .png()
+          .toBuffer();
+        console.log(`[QR-LOGO] ✅ Espaço em branco recriado usando blend 'over'`);
+      }
+    } catch (debugError) {
+      console.warn(`[QR-LOGO] ⚠️ Não foi possível verificar pixel central: ${debugError.message}`);
+    }
+    
+    console.log(`[QR-LOGO] ✅ Espaço em branco criado no centro`);
+    
+    // 5. Processar e inserir logo (mesma lógica do módulo que funcionou)
+    // Verificar novamente se o logo existe antes de processar
+    if (!fs.existsSync(logoPath)) {
+      console.error(`[QR-LOGO] ❌ ERRO CRÍTICO: Logo não encontrado em ${logoPath} antes de inserir!`);
+      throw new Error(`Logo não encontrado: ${logoPath}`);
+    }
+    
+    console.log(`[QR-LOGO] Processando e inserindo logo de: ${logoPath}`);
+    const logoMetadata = await sharp(logoPath).metadata();
+    console.log(`[QR-LOGO] Logo original: ${logoMetadata.width}x${logoMetadata.height}px`);
+    
+    // Redimensionar logo mantendo proporção
+    const logo = await sharp(logoPath)
+      .resize(logoSize, logoSize, {
+        fit: 'contain', // Manter proporção original
+        background: { r: 255, g: 255, b: 255, alpha: 1 }, // Fundo branco para áreas transparentes
+        kernel: 'lanczos3' // Alta qualidade (equivalente ao LANCZOS do Python)
+      })
+      .png({ quality: 100 })
+      .toBuffer();
+    
+    const processedLogoMetadata = await sharp(logo).metadata();
+    console.log(`[QR-LOGO] Logo processado: ${processedLogoMetadata.width}x${processedLogoMetadata.height}px`);
+    
+    // Calcular posição central do logo
+    const actualLogoWidth = processedLogoMetadata.width;
+    const actualLogoHeight = processedLogoMetadata.height;
+    const logoX = Math.floor((qrWidth - actualLogoWidth) / 2);
+    const logoY = Math.floor((qrHeight - actualLogoHeight) / 2);
+    
+    console.log(`[QR-LOGO] Logo posicionado no centro: (${logoX}, ${logoY})`);
+    
+    // Inserir logo no centro do QR Code (sobre a área branca)
+    const qrWithLogo = await sharp(qrWithWhiteArea)
+      .composite([{
+        input: logo,
+        top: logoY,
+        left: logoX,
+        blend: 'over' // Sobrepor mantendo transparência
+      }])
+      .png()
+      .toBuffer();
+    
+    console.log(`[QR-LOGO] ✅ Logo inserido com sucesso`);
+    
+    // QR code já está no tamanho correto (qrSizePixels), só redimensionar se necessário
+    let finalQRBuffer = qrWithLogo;
+    if (qrSizePixels !== size) {
+      console.log(`[QR-LOGO] Redimensionando QR code de ${qrSizePixels}x${qrSizePixels}px para ${size}x${size}px...`);
+      finalQRBuffer = await sharp(qrWithLogo)
+        .resize(size, size, {
+          kernel: 'nearest', // Preservar pixels exatos
+          fit: 'fill'
+        })
+        .png()
+        .toBuffer();
+      console.log(`[QR-LOGO] QR code redimensionado: ${finalQRBuffer.length} bytes`);
+    }
+    
+    // Salvar QR code com logo na pasta Generated/{PO}/{VPN}/
+    if (saveToFile) {
+      if (poNumber && referencia) {
+        // Estrutura: Generated/{PO}/{VPN}/
+        const poNormalized = String(poNumber || '0000').replace(/[^0-9A-Za-z]/g, '').toUpperCase() || '0000';
+        const vpnNormalized = String(referencia || '').replace(/[^0-9A-Za-z\-_]/g, '') || 'N/A';
+        const poDir = path.join(generatedDir, poNormalized);
+        const vpnDir = path.join(poDir, vpnNormalized);
+        if (!fs.existsSync(vpnDir)) {
+          fs.mkdirSync(vpnDir, { recursive: true });
+        }
+        const filename = `qrcode_${size}.png`;
+        const filepath = path.join(vpnDir, filename);
+        fs.writeFileSync(filepath, finalQRBuffer);
+        console.log(`[QR-LOGO] ✅ QR code salvo em: ${filepath} (${size}x${size}px)`);
+      } else if (referencia) {
+        // Fallback: estrutura antiga Generated/{VPN}/
+        const referenciaDir = path.join(generatedDir, referencia);
+        if (!fs.existsSync(referenciaDir)) {
+          fs.mkdirSync(referenciaDir, { recursive: true });
+        }
+        const filename = `qrcode_${size}.png`;
+        const filepath = path.join(referenciaDir, filename);
+        fs.writeFileSync(filepath, finalQRBuffer);
+        console.log(`[QR-LOGO] ✅ QR code salvo em: ${filepath} (${size}x${size}px)`);
+      } else {
+        // Se não tiver referência, salvar na pasta Generated com timestamp
+        const crypto = require('crypto');
+        const hash = crypto.createHash('md5').update(data + Date.now()).digest('hex').substring(0, 8);
+        const timestamp = Date.now();
+        const filename = `qrcode_${hash}_${size}_${timestamp}.png`;
+        const filepath = path.join(generatedDir, filename);
+        fs.writeFileSync(filepath, finalQRBuffer);
+        console.log(`[QR-LOGO] ✅ QR code salvo em: ${filepath} (${size}x${size}px)`);
+      }
+    }
+    
+    console.log(`[QR-LOGO] ✅ QR code gerado com logo: ${data.substring(0, 30)}... (${size}x${size}px)`);
+    return finalQRBuffer; // Retornar QR code no tamanho correto
+    
+  } catch (error) {
+    console.error(`[QR-LOGO] Erro ao gerar QR code com logo: ${error.message}`);
+    console.error(`[QR-LOGO] Stack: ${error.stack}`);
+    // Fallback: gerar QR code sem logo
+    try {
+      console.log(`[QR-LOGO] Tentando gerar QR code sem logo como fallback...`);
+      const fallbackBuffer = await QRCode.toBuffer(data, {
+        errorCorrectionLevel: 'H',
+        type: 'png',
+        width: size,
+        margin: 4
+      });
+      
+      // Salvar QR code sem logo se solicitado (sempre gerar novo)
+      if (saveToFile) {
+        const imageQrCodeDir = path.join(__dirname, 'image_qrcode');
+        const generatedDir = path.join(imageQrCodeDir, 'Generated');
+        if (!fs.existsSync(generatedDir)) {
+          fs.mkdirSync(generatedDir, { recursive: true });
+        }
+        if (referencia) {
+          const referenciaDir = path.join(generatedDir, referencia);
+          if (!fs.existsSync(referenciaDir)) {
+            fs.mkdirSync(referenciaDir, { recursive: true });
+          }
+          const filename = `qrcode_${size}_fallback.png`;
+          const filepath = path.join(referenciaDir, filename);
+          fs.writeFileSync(filepath, fallbackBuffer);
+          console.log(`[QR-LOGO] ✅ QR code (fallback) salvo em: ${filepath}`);
+        } else {
+          const crypto = require('crypto');
+          const hash = crypto.createHash('md5').update(data + Date.now()).digest('hex').substring(0, 8);
+          const timestamp = Date.now();
+          const filename = `qrcode_${hash}_${size}_fallback_${timestamp}.png`;
+          const filepath = path.join(generatedDir, filename);
+          fs.writeFileSync(filepath, fallbackBuffer);
+          console.log(`[QR-LOGO] ✅ QR code (fallback) salvo em: ${filepath}`);
+        }
+      }
+      
+      return fallbackBuffer;
+    } catch (fallbackError) {
+      throw new Error(`Erro ao gerar QR code: ${fallbackError.message}`);
+    }
+  }
+}
+
+/**
+ * Converte QR code com logo para ZPL
+ * @param {string} qrData - Dados para o QR code
+ * @param {number} x - Posição X em dots
+ * @param {number} y - Posição Y em dots
+ * @param {number} size - Tamanho do QR code em dots (padrão: 200)
+ * @returns {Promise<string>} - Comando ZPL para o QR code
+ */
+async function generateQRCodeZPL(qrData, x, y, size = 200, referencia = null, poNumber = null) {
+  try {
+    console.log(`[QR-LOGO] Gerando QR code ZPL: dados="${qrData.substring(0, 30)}...", posição=(${x}, ${y}), tamanho=${size} dots, referência="${referencia || 'N/A'}", PO="${poNumber || 'N/A'}"`);
+    
+    // Gerar QR code com logo (usando PO e VPN para cache: Generated/{PO}/{VPN}/)
+    const qrImageBuffer = await generateQRCodeWithLogo(qrData, size, null, true, referencia, poNumber);
+    console.log(`[QR-LOGO] QR code com logo gerado/carregado: ${qrImageBuffer.length} bytes`);
+    
+    // Verificar se o buffer é válido
+    if (!qrImageBuffer || qrImageBuffer.length === 0) {
+      throw new Error('Buffer do QR code está vazio ou inválido');
+    }
+    
+    // Verificar dimensões do buffer carregado
+    const bufferMetadata = await sharp(qrImageBuffer).metadata();
+    console.log(`[QR-LOGO] Dimensões do buffer carregado: ${bufferMetadata.width}x${bufferMetadata.height}px`);
+    console.log(`[QR-LOGO] Tamanho final desejado: ${size}x${size} dots`);
+    
+    // Converter para ZPL usando convertQRCodeBufferToZPL
+    // IMPORTANTE: Usar o tamanho em dots (não pixels)
+    // O QR code foi gerado em pixels, mas precisa ser convertido para dots da impressora
+    console.log(`[QR-LOGO] Convertendo QR code para ZPL (${size}x${size} dots)...`);
+    const zplCommand = await convertQRCodeBufferToZPL(qrImageBuffer, size, size);
+    console.log(`[QR-LOGO] Comando ZPL gerado: ${zplCommand.substring(0, 100)}...`);
+    
+    // Retornar comando ZPL completo com posicionamento
+    // Arredondar coordenadas para inteiros (ZPL requer inteiros)
+    const finalX = Math.round(x);
+    const finalY = Math.round(y);
+    const finalCommand = `^FO${finalX},${finalY}${zplCommand}`;
+    
+    console.log(`[QR-LOGO] ✅ QR code ZPL gerado: posição=(${finalX}, ${finalY}), tamanho=${size}x${size} dots`);
+    console.log(`[QR-LOGO] Comando ZPL completo (primeiros 150 chars): ${finalCommand.substring(0, 150)}...`);
+    return finalCommand;
+    
+  } catch (error) {
+    console.error(`[QR-LOGO] Erro ao gerar QR code ZPL: ${error.message}`);
+    console.error(`[QR-LOGO] Stack: ${error.stack}`);
+    // Fallback: usar comando ^BQN padrão
+    console.log(`[QR-LOGO] ⚠️ Usando fallback: comando ^BQN padrão`);
+    return `^FO${Math.round(x)},${Math.round(y)}^BQN,2,${Math.floor(size / 50)}^FD${qrData}^FS`;
+  }
+}
+
+/**
+ * Converte buffer de imagem (QR code) para ZPL
+ * @param {Buffer} imageBuffer - Buffer da imagem
+ * @param {number} width - Largura em dots
+ * @param {number} height - Altura em dots
+ * @returns {Promise<string>} - Comando ZPL
+ */
+async function convertQRCodeBufferToZPL(imageBuffer, width, height) {
+  try {
+    // Obter metadados da imagem original
+    const originalMetadata = await sharp(imageBuffer).metadata();
+    console.log(`[QR-LOGO] [REDIMENSIONAR] Imagem original: ${originalMetadata.width}x${originalMetadata.height}px`);
+    console.log(`[QR-LOGO] [REDIMENSIONAR] Tamanho desejado: ${width}x${height} dots`);
+    
+    // QR codes já são imagens binárias (preto e branco)
+    // Processar apenas o necessário: redimensionar e converter para greyscale
+    // NÃO aplicar threshold, normalise, sharpen - isso pode destruir a estrutura do QR code
+    // IMPORTANTE: Usar 'nearest' para preservar pixels exatos e garantir que o QR code funcione
+    const processed = await sharp(imageBuffer)
+      .resize(width, height, {
+        kernel: 'nearest', // Usar nearest para preservar pixels exatos (importante para QR codes)
+        fit: 'fill', // Preencher exatamente o tamanho desejado
+        withoutEnlargement: false // Permitir aumentar se necessário (de 1000px para dots pode ser necessário)
+      })
+      .greyscale() // Converter para escala de cinza
+      .toBuffer();
+    
+    console.log(`[QR-LOGO] [REDIMENSIONAR] Redimensionamento aplicado: ${originalMetadata.width}x${originalMetadata.height}px -> ${width}x${height} dots`);
+    
+    // Obter metadados
+    const metadata = await sharp(processed).metadata();
+    const actualWidth = metadata.width;
+    const actualHeight = metadata.height;
+    console.log(`[QR-LOGO] [REDIMENSIONAR] Imagem redimensionada: ${actualWidth}x${actualHeight} dots`);
+    
+    // Converter para raw data (sem threshold - QR code já é binário)
+    const { data } = await sharp(processed)
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    
+    // Calcular bytes por linha (arredondar para múltiplo de 8)
+    const bytesPerRow = Math.ceil(actualWidth / 8);
+    const totalBytes = bytesPerRow * actualHeight;
+    
+    // Converter para hexadecimal
+    // QR codes: pixels escuros (< 128) = preto, pixels claros (>= 128) = branco
+    let bitmapHex = '';
+    for (let i = 0; i < totalBytes; i++) {
+      let byte = 0;
+      const row = Math.floor(i / bytesPerRow);
+      const colByte = i % bytesPerRow;
+      
+      for (let bit = 0; bit < 8; bit++) {
+        const pixelX = colByte * 8 + bit;
+        if (pixelX < actualWidth) {
+          const pixelIdx = row * actualWidth + pixelX;
+          if (pixelIdx < data.length) {
+            const pixelValue = data[pixelIdx];
+            // Preto se pixel < 128 (QR codes já são binários, mas podem ter anti-aliasing)
+            if (pixelValue < 128) {
+              byte |= (1 << (7 - bit));
+            }
+          }
+        }
+      }
+      bitmapHex += byte.toString(16).padStart(2, '0').toUpperCase();
+    }
+    
+    console.log(`[QR-LOGO] QR code convertido para ZPL: ${actualWidth}x${actualHeight} dots, ${totalBytes} bytes`);
+    
+    // Gerar comando ZPL
+    const zplCommand = `^GFA,${totalBytes},${totalBytes},${bytesPerRow},${bitmapHex}^FS`;
+    return zplCommand;
+    
+  } catch (error) {
+    console.error(`[QR-LOGO] Erro ao converter QR code para ZPL: ${error.message}`);
+    throw error;
+  }
 }
 
 async function convertImageToZPL(imageUrl, width = 160, height = 160) {
@@ -2004,13 +2649,15 @@ app.post('/api/generate-preview', async (req, res) => {
 app.post('/api/print-individual', async (req, res) => {
   try {
     const { data, quantity } = req.body;
+    const printWithRFID = req.body.printWithRFID !== false;
     
     if (!data || !Array.isArray(data) || data.length === 0) {
       return res.status(400).json({ error: 'Dados inválidos para impressão' });
     }
 
     const requestedQty = quantity || data.length;
-    console.log(`[PRINT] Imprimindo ${requestedQty} etiqueta(s) individual via Python USB...`);
+    console.log(`[PRINT] Imprimindo ${requestedQty} etiqueta(s) individual via Python USB... (RFID ${printWithRFID ? 'habilitado' : 'desabilitado'})`);
+    console.log(`[PRINT] [DEBUG] quantity fornecido: ${quantity}, data.length: ${data.length}`);
     
     // Usar o módulo Python USB que funciona sem VOID
     const results = [];
@@ -2088,12 +2735,31 @@ app.post('/api/print-individual', async (req, res) => {
     }
     
     // Processar cada item com numeração sequencial
+    // IMPORTANTE: Se quantity foi fornecido explicitamente, usar 1 etiqueta por item do array
+    // (o frontend já expandiu o array com a quantidade desejada)
+    // Se não, usar item.QTY de cada item
+    const useExplicitQuantity = quantity !== undefined && quantity !== null;
+    console.log(`[PRINT] [DEBUG] useExplicitQuantity: ${useExplicitQuantity} (quantity=${quantity})`);
     let totalEtiquetasProcessadas = 0;
+    let globalSeq = 1; // Sequencial global quando quantity é explícito
+    
     for (const item of data) {
-      const itemQty = parseInt(item.QTY) || 1;
+      let itemQty;
+      let startSeq;
+      
+      if (useExplicitQuantity) {
+        // Frontend já expandiu o array, então cada item = 1 etiqueta
+        itemQty = 1;
+        startSeq = globalSeq;
+        globalSeq++;
+      } else {
+        // Usar QTY do item (comportamento original)
+        itemQty = parseInt(item.QTY) || 1;
+        startSeq = 1;
+      }
       
       // Para cada item, gerar as etiquetas com numeração sequencial
-      for (let seq = 1; seq <= itemQty; seq++) {
+      for (let seq = startSeq; seq < startSeq + itemQty; seq++) {
         totalEtiquetasProcessadas++;
         
         try {
@@ -2107,20 +2773,65 @@ app.post('/api/print-individual', async (req, res) => {
           // Usar PO do CSV (já extraído no upload)
           const poNumber = item.PO || '0000';
           const poFormatted = `PO${poNumber}`;
+          const poClean = (poNumber || '').toString().replace(/^(PO\s*)/i, '').trim();
           
           // Gerar barcode sequencial: barcode + PO(sem letras) + sequencial
           const barcodeSource = String(item.BARCODE || vpn.replace(/-/g, '') || '00000000');
           const baseBarcode = barcodeSource.substring(0, 12); // Usar barcode completo para RFID
           const sequentialBarcode = `${barcodeSource.substring(0, 8)}${poNumber}${seq}`;
           
-          // Dados para RFID: formato ZebraDesigner que funcionou (24 chars com zeros)
-          // Exemplo: 197416145132046412345678
-          const rfidContent = RFIDUtils.generateZebraDesignerFormat(baseBarcode, poNumber, seq, 24);
+          // Dados para RFID: primeiro tentar ler do campo RFID dos dados de entrada
+          // Suporta múltiplos formatos: RFID, rfid, RFID_DATA, rfid_data, etc.
+          let rfidContent = null;
+          const rfidFromData = item.RFID || item.rfid || item.RFID_DATA || item.rfid_data || 
+                               item['RFID'] || item['rfid'] || item['RFID_DATA'] || item['rfid_data'] || '';
           
-          // Validar dados RFID (enviar como string direta, igual ZebraDesigner)
-          RFIDUtils.validateRFIDData(rfidContent);
+          if (rfidFromData && String(rfidFromData).trim() !== '') {
+            // Se houver RFID nos dados de entrada, usar esse valor
+            rfidContent = String(rfidFromData).trim();
+            console.log(`[RFID] ✅ RFID lido dos dados de entrada: ${rfidContent}`);
+            
+            // Validar dados RFID fornecidos
+            try {
+              RFIDUtils.validateRFIDData(rfidContent);
+            } catch (validationError) {
+              console.warn(`[RFID] ⚠️ RFID fornecido não passou na validação: ${validationError.message}`);
+              console.warn(`[RFID] ⚠️ Gerando RFID automaticamente como fallback...`);
+              rfidContent = null; // Forçar geração automática
+            }
+          }
           
-          console.log(`[RFID] RFID formato ZebraDesigner (string direta): ${rfidContent}`);
+          // Se não houver RFID nos dados ou se a validação falhou, gerar automaticamente
+          if (!rfidContent) {
+            // Dados para RFID: formato ZebraDesigner que funcionou (24 chars com zeros)
+            // Exemplo: 197416145132046412345678
+            rfidContent = RFIDUtils.generateZebraDesignerFormat(baseBarcode, poNumber, seq, 24);
+            console.log(`[RFID] 🔄 RFID gerado automaticamente (formato ZebraDesigner): ${rfidContent}`);
+          }
+          
+          // GARANTIR que rfidContent nunca seja null ou vazio
+          if (!rfidContent || typeof rfidContent !== 'string' || rfidContent.trim().length === 0) {
+            console.error(`[RFID] ❌ ERRO CRÍTICO: rfidContent está inválido após geração! Forçando geração de fallback...`);
+            console.error(`[RFID] ❌ baseBarcode: ${baseBarcode}, poNumber: ${poNumber}, seq: ${seq}`);
+            // Forçar geração com valores padrão
+            rfidContent = RFIDUtils.generateZebraDesignerFormat(baseBarcode || '000000000000', poNumber || '0000', seq || 1, 24);
+            console.log(`[RFID] ✅ RFID gerado com fallback: ${rfidContent}`);
+          }
+          
+          // Validar dados RFID finais (enviar como string direta, igual ZebraDesigner)
+          try {
+            RFIDUtils.validateRFIDData(rfidContent);
+          } catch (validationError) {
+            console.error(`[RFID] ❌ ERRO: RFID gerado não passou na validação: ${validationError.message}`);
+            console.error(`[RFID] ❌ RFID gerado: "${rfidContent}"`);
+            // Forçar geração com valores padrão
+            rfidContent = RFIDUtils.generateZebraDesignerFormat('000000000000', '0000', seq || 1, 24);
+            console.log(`[RFID] ✅ RFID gerado com valores padrão de emergência: ${rfidContent}`);
+            // Validar novamente
+            RFIDUtils.validateRFIDData(rfidContent);
+          }
+          
+          console.log(`[RFID] ✅ RFID final validado (string direta): ${rfidContent} (${rfidContent.length} chars)`);
           
           // Buscar imagem da API Python usando a referência
           // Primeiro tentar usar IMAGE_URL do item (se já estiver presente)
@@ -2141,7 +2852,7 @@ app.post('/api/print-individual', async (req, res) => {
                   imageUrl = `${imageProxyUrl.replace(/\/$/, '')}/image/reference/${normalizedRef}`;
                 } else {
                   // Desenvolvimento local: usar localhost
-                  const imageProxyPort = process.env._IMAGE_PROXY_ACTUAL_PORT || process.env.IMAGE_PROXY_PORT || '8000';
+                  const imageProxyPort = process.env._IMAGE_PROXY_ACTUAL_PORT || process.env.IMAGE_PROXY_PORT || '8002';
                   imageUrl = `http://127.0.0.1:${imageProxyPort}/image/reference/${normalizedRef}`;
                 }
                 console.log(`[IMAGE] ✅ URL construída para referência "${referencia}" (normalizada: ${normalizedRef}): ${imageUrl}`);
@@ -2276,13 +2987,14 @@ app.post('/api/print-individual', async (req, res) => {
           // QR codes são gerados SEMPRE com dados da VPN usando ^BQN
           console.log(`[IMAGE] IMAGE_URL da API Python será usado APENAS como imagem do produto (não como QR code)`);
           
-          // QR codes: SEMPRE gerar com dados da VPN
-          // Os QR codes são gerados automaticamente pelo comando ^BQN do ZPL usando os dados da VPN
+          // QR codes: usar apenas os padrões gerados pela VPN (comandos ^BQN)
+          console.log(`[QR] ✅ QR codes serão gerados com dados VPN: "${vpn}"`);
+          console.log(`[QR] Os QR codes serão renderizados pelo comando ^BQN do ZPL usando {QR_DATA_1}, {QR_DATA_2}, {QR_DATA_3}`);
+          
+          // Definir dados dos QR codes baseados na VPN
           let qrData1 = vpn;
           let qrData2 = vpn;
           let qrData3 = vpn;
-          console.log(`[QR] ✅ QR codes serão gerados com dados VPN: "${vpn}"`);
-          console.log(`[QR] Os QR codes serão renderizados pelo comando ^BQN do ZPL usando {QR_DATA_1}, {QR_DATA_2}, {QR_DATA_3}`);
 
           // Processar imagem do sapato usando função compartilhada
           // Isso garante que print-individual e print-all usem exatamente a mesma configuração
@@ -2298,7 +3010,7 @@ app.post('/api/print-individual', async (req, res) => {
             if (workingTemplate.includes('{IMAGE}')) {
               workingTemplate = workingTemplate.replace(/{IMAGE}/g, imageCommand);
               console.log(`[IMAGE] ✅ Imagem inserida no placeholder {IMAGE} na posição (${imageX}, ${imageY})`);
-          } else {
+            } else {
               // Inserir após o segundo ^XA (início da etiqueta)
               const xaMatches = workingTemplate.match(/\^XA/g);
               const xaCount = xaMatches ? xaMatches.length : 0;
@@ -2332,8 +3044,8 @@ app.post('/api/print-individual', async (req, res) => {
             console.warn(`[IMAGE] ⚠️ Imagem NÃO encontrada no template após inserção! Verificando...`);
           }
 
-          // PRESERVAR IMAGEM ANTES DE REMOVER COMANDOS RFID
-          // Extrair o comando da imagem para preservá-lo durante a remoção de RFID
+          // PRESERVAR IMAGEM ANTES DE PROCESSAR
+          // Extrair o comando da imagem para preservá-lo durante o processamento
           let preservedImageCommand = null;
           if (shoeImageZPL && shoeImageZPL.trim() !== '') {
             // Procurar pelo comando completo da imagem no template
@@ -2341,21 +3053,14 @@ app.post('/api/print-individual', async (req, res) => {
             const imageMatch = workingTemplate.match(imagePattern);
             if (imageMatch && imageMatch.length > 0) {
               preservedImageCommand = imageMatch[0];
-              console.log(`[IMAGE] ✅ Comando da imagem preservado antes da remoção de RFID: ${preservedImageCommand.substring(0, 100)}...`);
+              console.log(`[IMAGE] ✅ Comando da imagem preservado: ${preservedImageCommand.substring(0, 100)}...`);
             }
-            }
-            
-          // REMOVER COMANDOS RFID ANTES DE SUBSTITUIR VARIÁVEIS
-          // Comandos RFID (^RFW, ^RFR, ^RFI, etc.) podem causar "void" na etiqueta quando não conseguem gravar
-          // Remover completamente para evitar problemas durante testes
-          // IMPORTANTE: Usar regex mais específico para não remover comandos de imagem (^GFA)
-          workingTemplate = workingTemplate.replace(/^\^RFW[^\^]*\^FS$/gm, ''); // Remove linha completa com ^RFW
-          workingTemplate = workingTemplate.replace(/\^RFW[^\^]*\^FS/g, ''); // Remove ^RFW em qualquer lugar
-          workingTemplate = workingTemplate.replace(/\^RFR[^\^]*\^FS/g, ''); // Remove ^RFR
-          workingTemplate = workingTemplate.replace(/\^RFI[^\^]*\^FS/g, ''); // Remove ^RFI
-          workingTemplate = workingTemplate.replace(/\^RFT[^\^]*\^FS/g, ''); // Remove ^RFT
-          workingTemplate = workingTemplate.replace(/\^RFU[^\^]*\^FS/g, ''); // Remove ^RFU
-          console.log(`[RFID] ✅ Comandos RFID removidos do template para evitar "void" durante testes`);
+          }
+          
+          // NOTA: NÃO remover comandos RFID do template aqui
+          // Os comandos RFID serão substituídos com os dados reais durante a substituição de variáveis
+          // Se não houver dados RFID, serão removidos depois
+          console.log(`[RFID] ✅ Template preservado com comandos RFID - serão substituídos com dados reais`);
           
           // RESTAURAR IMAGEM SE FOI REMOVIDA ACIDENTALMENTE
           if (preservedImageCommand && !workingTemplate.includes('^GFA')) {
@@ -2379,7 +3084,14 @@ app.post('/api/print-individual', async (req, res) => {
             }
           }
 
+          // Validar rfidContent ANTES de substituir no template
+          // Garantir que rfidContent é uma string válida e não vazia
+          const isValidRfid = printWithRFID && rfidContent && 
+                              typeof rfidContent === 'string' && 
+                              rfidContent.trim().length > 0;
+          
           // Substituir variáveis no template com dados sequenciais
+          // IMPORTANTE: Só substituir {RFID_DATA} se houver dados válidos
           let workingZPL = workingTemplate
             .replace(/{STYLE_NAME}/g, styleName)
             .replace(/{VPN}/g, vpn)
@@ -2393,8 +3105,8 @@ app.post('/api/print-individual', async (req, res) => {
             .replace(/{PO_INFO}/g, poFormatted)
             .replace(/{LOCAL_INFO}/g, '') // LOCAL ignorado - campo vazio
             .replace(/{BARCODE}/g, sequentialBarcode) // Usar barcode sequencial
-            .replace(/{RFID_DATA_HEX}/g, '') // Remover dados RFID (não usar mais)
-            .replace(/{RFID_DATA}/g, ''); // Remover dados RFID (não usar mais)
+            .replace(/{RFID_DATA_HEX}/g, isValidRfid ? rfidContent.trim() : '') // Substituir RFID hex apenas se válido
+            .replace(/{RFID_DATA}/g, isValidRfid ? rfidContent.trim() : ''); // Substituir RFID apenas se válido
           
           // Remover texto "GRAVADO RFID: {RFID_STATUS}" completamente
           // Substituir {RFID_STATUS} por string vazia e remover linha completa se necessário
@@ -2404,27 +3116,64 @@ app.post('/api/print-individual', async (req, res) => {
           // Remover qualquer linha que contenha "GRAVADO RFID" (com ou sem placeholder)
           workingZPL = workingZPL.replace(/[^\n]*GRAVADO RFID[^\n]*\n?/g, '');
           
-          // Verificar se ainda há comandos RFID restantes e remover TODOS
-          // Remover comandos RFID mesmo que estejam vazios ou incompletos
-          workingZPL = workingZPL.replace(/\^RFW[^\^]*\^FS/g, ''); // Remove ^RFW
-          workingZPL = workingZPL.replace(/\^RFR[^\^]*\^FS/g, ''); // Remove ^RFR
-          workingZPL = workingZPL.replace(/\^RFI[^\^]*\^FS/g, ''); // Remove ^RFI
-          workingZPL = workingZPL.replace(/\^RFT[^\^]*\^FS/g, ''); // Remove ^RFT
-          workingZPL = workingZPL.replace(/\^RFU[^\^]*\^FS/g, ''); // Remove ^RFU
-          // Remover qualquer comando que comece com ^RF (catch-all)
-          workingZPL = workingZPL.replace(/\^RF[^\^]*\^FS/g, '');
-          // Remover comandos RFID que não terminam com ^FS (casos incompletos)
-          workingZPL = workingZPL.replace(/\^RFW[^\n]*/g, '');
-          workingZPL = workingZPL.replace(/\^RFR[^\n]*/g, '');
-          workingZPL = workingZPL.replace(/\^RFI[^\n]*/g, '');
-          workingZPL = workingZPL.replace(/\^RFT[^\n]*/g, '');
-          workingZPL = workingZPL.replace(/\^RFU[^\n]*/g, '');
+          // IMPORTANTE: Processar comandos RFID de forma mais robusta
+          // Primeiro, remover qualquer comando RFID com dados vazios (que causaria "void")
+          // Isso remove comandos como ^RFW,H,2,12,1^FD^FS (sem dados)
+          workingZPL = workingZPL.replace(/\^RFW[^\^]*\^FD\s*\^FS/g, ''); // Remove ^RFW com ^FD vazio
+          workingZPL = workingZPL.replace(/\^RFW[^\^]*\^FD\{RFID_DATA\}\^FS/g, ''); // Remove ^RFW com placeholder não substituído
           
-          if (workingZPL.includes('^RF')) {
-            console.warn(`[RFID] ⚠️ Aviso: Ainda há comandos RFID no ZPL após remoção, removendo novamente...`);
-            // Última tentativa: remover qualquer coisa que comece com ^RF até o próximo ^ ou quebra de linha
-            workingZPL = workingZPL.replace(/\^RF[^\^\\n]*/g, '');
+          // Agora, se houver dados RFID válidos, garantir que o comando está correto
+          if (isValidRfid) {
+            const trimmedRfid = rfidContent.trim();
+            const expectedRfidCommand = `^RFW,H,2,12,1^FD${trimmedRfid}^FS`;
+            
+            if (workingZPL.includes(expectedRfidCommand)) {
+              console.log(`[RFID] ✅ Comando RFID válido no ZPL: ${trimmedRfid}`);
+            } else if (workingZPL.includes('^RFW')) {
+              // Se o comando RFID existe mas não foi substituído corretamente, substituir manualmente
+              workingZPL = workingZPL.replace(/\^RFW,H,2,12,1^FD[^\^]*\^FS/g, expectedRfidCommand);
+              console.log(`[RFID] ✅ Comando RFID substituído manualmente: ${trimmedRfid}`);
+            } else {
+              // Se não houver comando RFID no template, inserir antes de ^PQ
+              const rfidCommand = `^RFW,H,2,12,1^FD${trimmedRfid}^FS\n`;
+              workingZPL = workingZPL.replace(/\^PQ/g, `${rfidCommand}^PQ`);
+              console.log(`[RFID] ✅ Comando RFID inserido no ZPL: ${trimmedRfid}`);
+            }
+          } else {
+            // Se não houver dados RFID válidos, remover TODOS os comandos RFID para evitar "void"
+            console.warn(`[RFID] ⚠️ Nenhum dado RFID válido disponível, removendo TODOS os comandos RFID para evitar "void"`);
+            // Remover comandos RFID de forma mais abrangente
+            workingZPL = workingZPL.replace(/\^RFW[^\^]*\^FS/g, ''); // Remove ^RFW com ^FS
+            workingZPL = workingZPL.replace(/\^RFR[^\^]*\^FS/g, ''); // Remove ^RFR
+            workingZPL = workingZPL.replace(/\^RFI[^\^]*\^FS/g, ''); // Remove ^RFI
+            workingZPL = workingZPL.replace(/\^RFT[^\^]*\^FS/g, ''); // Remove ^RFT
+            workingZPL = workingZPL.replace(/\^RFU[^\^]*\^FS/g, ''); // Remove ^RFU
+            workingZPL = workingZPL.replace(/\^RF[^\^]*\^FS/g, ''); // Remove qualquer ^RF com ^FS
+            // Remover também comandos que podem estar em múltiplas linhas
+            workingZPL = workingZPL.replace(/\^RFW[^\n]*\n?/g, '');
+            workingZPL = workingZPL.replace(/\^RFR[^\n]*\n?/g, '');
+            workingZPL = workingZPL.replace(/\^RFI[^\n]*\n?/g, '');
+            workingZPL = workingZPL.replace(/\^RFT[^\n]*\n?/g, '');
+            workingZPL = workingZPL.replace(/\^RFU[^\n]*\n?/g, '');
+            // Remover qualquer comando ^RF que possa ter ficado
+            workingZPL = workingZPL.replace(/\^RF[^\n]*\n?/g, '');
+            console.log(`[RFID] ✅ Todos os comandos RFID removidos do ZPL`);
           }
+          
+          // VERIFICAÇÃO FINAL DE SEGURANÇA: Remover qualquer comando RFID inválido que possa ter passado
+          // Isso garante que não há comandos RFID com dados vazios ou inválidos que causariam "void"
+          const invalidRfidPatterns = [
+            /\^RFW[^\^]*\^FD\s*\^FS/g,  // ^RFW com ^FD vazio
+            /\^RFW[^\^]*\^FD\{[^}]+\}\^FS/g,  // ^RFW com placeholder não substituído
+            /\^RFW[^\^]*\^FD\^FS/g,  // ^RFW com ^FD sem dados
+          ];
+          invalidRfidPatterns.forEach(pattern => {
+            const matches = workingZPL.match(pattern);
+            if (matches && matches.length > 0) {
+              console.warn(`[RFID] ⚠️ Comando RFID inválido detectado e removido: ${matches[0].substring(0, 50)}...`);
+              workingZPL = workingZPL.replace(pattern, '');
+            }
+          });
           
           // Verificar se ainda há placeholders não substituídos que possam causar "void"
           // IMPORTANTE: Não remover {IMAGE} se ainda estiver presente (pode ser inserido depois)
@@ -2507,6 +3256,27 @@ app.post('/api/print-individual', async (req, res) => {
             console.warn(`[AVISO] Placeholder {IMAGE} ainda presente no ZPL final - imagem pode não ter sido inserida`);
           }
 
+          // VERIFICAÇÃO FINAL CRÍTICA: Garantir que RFID está presente no ZPL quando deveria estar
+          const hasRfidCommand = workingZPL.includes('^RFW');
+          const isValidRfidFinal = printWithRFID && rfidContent && typeof rfidContent === 'string' && rfidContent.trim().length > 0;
+          
+          if (isValidRfidFinal && !hasRfidCommand) {
+            console.error(`[RFID] ❌ ERRO CRÍTICO: RFID válido (${rfidContent}) mas comando ^RFW não encontrado no ZPL!`);
+            console.error(`[RFID] ❌ Inserindo comando RFID de emergência...`);
+            const rfidCommand = `^RFW,H,2,12,1^FD${rfidContent.trim()}^FS\n`;
+            workingZPL = workingZPL.replace(/\^PQ/g, `${rfidCommand}^PQ`);
+            console.log(`[RFID] ✅ Comando RFID inserido de emergência: ${rfidContent}`);
+          } else if (!isValidRfidFinal && hasRfidCommand) {
+            console.error(`[RFID] ❌ ERRO CRÍTICO: Comando ^RFW encontrado no ZPL mas RFID inválido! Removendo...`);
+            workingZPL = workingZPL.replace(/\^RFW[^\^]*\^FS/g, '');
+            workingZPL = workingZPL.replace(/\^RFW[^\n]*\n?/g, '');
+            console.log(`[RFID] ✅ Comandos RFID removidos de emergência (RFID inválido)`);
+          } else if (isValidRfidFinal && hasRfidCommand) {
+            console.log(`[RFID] ✅ Verificação final: RFID válido (${rfidContent}) e comando ^RFW presente no ZPL`);
+          } else {
+            console.log(`[RFID] ✅ Verificação final: Sem RFID (esperado) e sem comandos ^RFW no ZPL`);
+          }
+
           // Log completo do ZPL para debug
           console.log('\n============ ZPL FINAL GERADO ============');
           console.log(workingZPL);
@@ -2547,14 +3317,16 @@ app.post('/api/print-individual', async (req, res) => {
                   results.push({
                     item: `${styleName} (${seq}/${itemQty})`,
                     barcode: sequentialBarcode,
-                    rfid: rfidContent,
+                    rfid: printWithRFID ? rfidContent : null,
                     success: true,
                     message: `Etiqueta ${seq} impressa com sucesso (após reconexão)`,
                     details: retryResult.result
                   });
                   console.log(`[OK] Etiqueta ${styleName} ${seq}/${itemQty} processada: OK (após reconexão)`);
                   console.log(`   [DATA] Barcode: ${sequentialBarcode}`);
-                  console.log(`   [RFID] RFID String Direta: ${rfidContent}`);
+                  if (printWithRFID) {
+                    console.log(`   [RFID] RFID String Direta: ${rfidContent}`);
+                  }
                 } else {
                   throw new Error(retryResult.error || 'Erro ao reimprimir após reconexão');
                 }
@@ -2565,10 +3337,24 @@ app.post('/api/print-individual', async (req, res) => {
               throw new Error(printResult.error || 'Erro desconhecido ao imprimir');
             }
           } else {
+          // Registrar impressão no banco de dados
+          if (pool && printWithRFID && printResult.success && rfidContent) {
+            try {
+                      await pool.query(`
+                        INSERT INTO senda.print_log (epc_id, barcode, vpn, po, sequence)
+                        VALUES ($1, $2, $3, $4, $5)
+                        ON CONFLICT (epc_id) DO NOTHING
+                      `, [rfidContent, sequentialBarcode, item.VPN || null, poClean || null, seq]);
+              console.log(`[PRINT-LOG] ✅ Etiqueta registrada no banco: EPC=${rfidContent}`);
+            } catch (logError) {
+              console.warn(`[PRINT-LOG] ⚠️ Erro ao registrar impressão no banco: ${logError.message}`);
+            }
+          }
+          
           results.push({
             item: `${styleName} (${seq}/${itemQty})`,
             barcode: sequentialBarcode,
-            rfid: rfidContent,
+            rfid: printWithRFID ? rfidContent : null,
             success: printResult.success,
             message: printResult.success ? `Etiqueta ${seq} impressa com sucesso` : printResult.error,
             details: printResult.result
@@ -2576,7 +3362,9 @@ app.post('/api/print-individual', async (req, res) => {
           
           console.log(`[OK] Etiqueta ${styleName} ${seq}/${itemQty} processada:`, printResult.success ? 'OK' : printResult.error);
           console.log(`   [DATA] Barcode: ${sequentialBarcode}`);
-          console.log(`   [RFID] RFID String Direta: ${rfidContent}`);
+          if (printWithRFID) {
+            console.log(`   [RFID] RFID String Direta: ${rfidContent}`);
+          }
           }
           
         } catch (error) {
@@ -2616,12 +3404,13 @@ app.post('/api/print-individual', async (req, res) => {
 app.post('/api/print-all', async (req, res) => {
   try {
     const { data } = req.body;
+    const printWithRFID = req.body.printWithRFID !== false;
     
     if (!data || !Array.isArray(data) || data.length === 0) {
       return res.status(400).json({ error: 'Dados inválidos para impressão' });
     }
 
-    console.log(`[PRINT] Imprimindo TODAS as ${data.length} etiquetas via Python USB...`);
+    console.log(`[PRINT] Imprimindo TODAS as ${data.length} etiquetas via Python USB... (RFID ${printWithRFID ? 'habilitado' : 'desabilitado'})`);
     
     // Usar o mesmo sistema do print-individual
     const results = [];
@@ -2727,12 +3516,57 @@ app.post('/api/print-all', async (req, res) => {
           // Formatar PO (sem letras, apenas números)
           const poFormatted = `PO${poNumber}`;
           
-          // Gerar dados RFID no formato ZebraDesigner (Barcode + PO + Sequencial + Zeros)
-          const rfidContent = RFIDUtils.generateZebraDesignerFormat(sequentialBarcode, poNumber, seq, 24);
+          // Dados para RFID: primeiro tentar ler do campo RFID dos dados de entrada
+          // Suporta múltiplos formatos: RFID, rfid, RFID_DATA, rfid_data, etc.
+          let rfidContent = null;
+          const rfidFromData = item.RFID || item.rfid || item.RFID_DATA || item.rfid_data || 
+                               item['RFID'] || item['rfid'] || item['RFID_DATA'] || item['rfid_data'] || '';
           
-          RFIDUtils.validateRFIDData(rfidContent);
+          if (rfidFromData && String(rfidFromData).trim() !== '') {
+            // Se houver RFID nos dados de entrada, usar esse valor
+            rfidContent = String(rfidFromData).trim();
+            console.log(`[RFID] ✅ RFID lido dos dados de entrada (print-all): ${rfidContent}`);
+            
+            // Validar dados RFID fornecidos
+            try {
+              RFIDUtils.validateRFIDData(rfidContent);
+            } catch (validationError) {
+              console.warn(`[RFID] ⚠️ RFID fornecido não passou na validação (print-all): ${validationError.message}`);
+              console.warn(`[RFID] ⚠️ Gerando RFID automaticamente como fallback...`);
+              rfidContent = null; // Forçar geração automática
+            }
+          }
           
-          console.log(`[RFID] RFID formato ZebraDesigner (string direta): ${rfidContent}`);
+          // Se não houver RFID nos dados ou se a validação falhou, gerar automaticamente
+          if (!rfidContent) {
+            // Gerar dados RFID no formato ZebraDesigner (Barcode + PO + Sequencial + Zeros)
+            rfidContent = RFIDUtils.generateZebraDesignerFormat(sequentialBarcode, poNumber, seq, 24);
+            console.log(`[RFID] 🔄 RFID gerado automaticamente (print-all, formato ZebraDesigner): ${rfidContent}`);
+          }
+          
+          // GARANTIR que rfidContent nunca seja null ou vazio (print-all)
+          if (!rfidContent || typeof rfidContent !== 'string' || rfidContent.trim().length === 0) {
+            console.error(`[RFID] ❌ ERRO CRÍTICO (print-all): rfidContent está inválido após geração! Forçando geração de fallback...`);
+            console.error(`[RFID] ❌ sequentialBarcode: ${sequentialBarcode}, poNumber: ${poNumber}, seq: ${seq}`);
+            // Forçar geração com valores padrão
+            rfidContent = RFIDUtils.generateZebraDesignerFormat(sequentialBarcode || '000000000000', poNumber || '0000', seq || 1, 24);
+            console.log(`[RFID] ✅ RFID gerado com fallback (print-all): ${rfidContent}`);
+          }
+          
+          // Validar dados RFID finais (enviar como string direta, igual ZebraDesigner)
+          try {
+            RFIDUtils.validateRFIDData(rfidContent);
+          } catch (validationError) {
+            console.error(`[RFID] ❌ ERRO (print-all): RFID gerado não passou na validação: ${validationError.message}`);
+            console.error(`[RFID] ❌ RFID gerado: "${rfidContent}"`);
+            // Forçar geração com valores padrão
+            rfidContent = RFIDUtils.generateZebraDesignerFormat('000000000000', '0000', seq || 1, 24);
+            console.log(`[RFID] ✅ RFID gerado com valores padrão de emergência (print-all): ${rfidContent}`);
+            // Validar novamente
+            RFIDUtils.validateRFIDData(rfidContent);
+          }
+          
+          console.log(`[RFID] ✅ RFID final validado (print-all, string direta): ${rfidContent} (${rfidContent.length} chars)`);
           
           // Buscar imagem da API Python usando a referência
           // Primeiro tentar usar IMAGE_URL do item (se já estiver presente)
@@ -2753,7 +3587,7 @@ app.post('/api/print-all', async (req, res) => {
                   imageUrl = `${imageProxyUrl.replace(/\/$/, '')}/image/reference/${normalizedRef}`;
                 } else {
                   // Desenvolvimento local: usar localhost
-                  const imageProxyPort = process.env._IMAGE_PROXY_ACTUAL_PORT || process.env.IMAGE_PROXY_PORT || '8000';
+                  const imageProxyPort = process.env._IMAGE_PROXY_ACTUAL_PORT || process.env.IMAGE_PROXY_PORT || '8002';
                   imageUrl = `http://127.0.0.1:${imageProxyPort}/image/reference/${normalizedRef}`;
                 }
                 console.log(`[IMAGE] ✅ URL construída para referência "${referencia}" (normalizada: ${normalizedRef}): ${imageUrl} [print-all]`);
@@ -2898,13 +3732,14 @@ app.post('/api/print-all', async (req, res) => {
           // QR codes são gerados SEMPRE com dados da VPN usando ^BQN
           console.log(`[IMAGE] IMAGE_URL da API Python será usado APENAS como imagem do produto (não como QR code) (print-all)`);
           
-          // QR codes: SEMPRE gerar com dados da VPN
-          // Os QR codes são gerados automaticamente pelo comando ^BQN do ZPL usando os dados da VPN
+          // QR codes: usar apenas os padrões gerados pela VPN (comandos ^BQN)
+          console.log(`[QR] ✅ QR codes serão gerados com dados VPN: "${vpn}" (print-all)`);
+          console.log(`[QR] Os QR codes serão renderizados pelo comando ^BQN do ZPL usando {QR_DATA_1}, {QR_DATA_2}, {QR_DATA_3} (print-all)`);
+          
+          // Definir dados dos QR codes baseados na VPN
           let qrData1 = vpn;
           let qrData2 = vpn;
           let qrData3 = vpn;
-          console.log(`[QR] ✅ QR codes serão gerados com dados VPN: "${vpn}" (print-all)`);
-          console.log(`[QR] Os QR codes serão renderizados pelo comando ^BQN do ZPL usando {QR_DATA_1}, {QR_DATA_2}, {QR_DATA_3}`);
 
           // Processar imagem do sapato usando função compartilhada
           // Isso garante que print-individual e print-all usem exatamente a mesma configuração
@@ -2946,8 +3781,8 @@ app.post('/api/print-all', async (req, res) => {
           // Código antigo removido - agora usando função compartilhada processProductImage
           // Todo o processamento de imagem foi movido para processProductImage() para garantir consistência
 
-          // PRESERVAR IMAGEM ANTES DE REMOVER COMANDOS RFID (print-all)
-          // Extrair o comando da imagem para preservá-lo durante a remoção de RFID
+          // PRESERVAR IMAGEM ANTES DE PROCESSAR (print-all)
+          // Extrair o comando da imagem para preservá-lo durante o processamento
           let preservedImageCommand = null;
           if (shoeImageZPL && shoeImageZPL.trim() !== '') {
             // Procurar pelo comando completo da imagem no template
@@ -2955,45 +3790,23 @@ app.post('/api/print-all', async (req, res) => {
             const imageMatch = workingTemplate.match(imagePattern);
             if (imageMatch && imageMatch.length > 0) {
               preservedImageCommand = imageMatch[0];
-              console.log(`[IMAGE] ✅ Comando da imagem preservado antes da remoção de RFID (print-all): ${preservedImageCommand.substring(0, 100)}...`);
+              console.log(`[IMAGE] ✅ Comando da imagem preservado (print-all): ${preservedImageCommand.substring(0, 100)}...`);
             }
           }
+          
+          // NOTA: NÃO remover comandos RFID do template aqui (print-all)
+          // Os comandos RFID serão substituídos com os dados reais durante a substituição de variáveis
+          // Se não houver dados RFID, serão removidos depois
+          console.log(`[RFID] ✅ Template preservado com comandos RFID (print-all) - serão substituídos com dados reais`);
 
-          // REMOVER COMANDOS RFID ANTES DE SUBSTITUIR VARIÁVEIS (print-all)
-          // Comandos RFID (^RFW, ^RFR, ^RFI, etc.) podem causar "void" na etiqueta quando não conseguem gravar
-          // Remover completamente para evitar problemas durante testes
-          // IMPORTANTE: Usar regex mais específico para não remover comandos de imagem (^GFA)
-          workingTemplate = workingTemplate.replace(/^\^RFW[^\^]*\^FS$/gm, ''); // Remove linha completa com ^RFW
-          workingTemplate = workingTemplate.replace(/\^RFW[^\^]*\^FS/g, ''); // Remove ^RFW em qualquer lugar
-          workingTemplate = workingTemplate.replace(/\^RFR[^\^]*\^FS/g, ''); // Remove ^RFR
-          workingTemplate = workingTemplate.replace(/\^RFI[^\^]*\^FS/g, ''); // Remove ^RFI
-          workingTemplate = workingTemplate.replace(/\^RFT[^\^]*\^FS/g, ''); // Remove ^RFT
-          workingTemplate = workingTemplate.replace(/\^RFU[^\^]*\^FS/g, ''); // Remove ^RFU
-          console.log(`[RFID] ✅ Comandos RFID removidos do template para evitar "void" durante testes (print-all)`);
-            
-          // RESTAURAR IMAGEM SE FOI REMOVIDA ACIDENTALMENTE (print-all)
-          if (preservedImageCommand && !workingTemplate.includes('^GFA')) {
-            console.log(`[IMAGE] ⚠️ Imagem foi removida acidentalmente, restaurando... (print-all)`);
-            // Inserir imagem após o segundo ^XA (início da etiqueta)
-            const xaMatches = workingTemplate.match(/\^XA/g);
-            const xaCount = xaMatches ? xaMatches.length : 0;
-            if (xaCount >= 2) {
-              let xaIndex = 0;
-              workingTemplate = workingTemplate.replace(/\^XA/g, (match) => {
-                xaIndex++;
-                if (xaIndex === 2) {
-                  return `${match}\n${preservedImageCommand}`;
-                }
-                return match;
-              });
-              console.log(`[IMAGE] ✅ Imagem restaurada após remoção de RFID (print-all)`);
-            } else if (xaCount === 1) {
-              workingTemplate = workingTemplate.replace(/^XA/m, `^XA\n${preservedImageCommand}`);
-              console.log(`[IMAGE] ✅ Imagem restaurada após remoção de RFID (único ^XA) (print-all)`);
-            }
-          }
-
+          // Validar rfidContent ANTES de substituir no template (print-all)
+          // Garantir que rfidContent é uma string válida e não vazia
+          const isValidRfid = printWithRFID && rfidContent && 
+                              typeof rfidContent === 'string' && 
+                              rfidContent.trim().length > 0;
+          
           // Substituir variáveis no template com dados sequenciais
+          // IMPORTANTE: Só substituir {RFID_DATA} se houver dados válidos
           let workingZPL = workingTemplate
             .replace(/{STYLE_NAME}/g, styleName)
             .replace(/{VPN}/g, vpn)
@@ -3007,8 +3820,8 @@ app.post('/api/print-all', async (req, res) => {
             .replace(/{PO_INFO}/g, poFormatted)
             .replace(/{LOCAL_INFO}/g, '') // LOCAL ignorado - campo vazio
             .replace(/{BARCODE}/g, sequentialBarcode)
-            .replace(/{RFID_DATA_HEX}/g, '') // Remover dados RFID (não usar mais)
-            .replace(/{RFID_DATA}/g, ''); // Remover dados RFID (não usar mais)
+            .replace(/{RFID_DATA_HEX}/g, isValidRfid ? rfidContent.trim() : '') // Substituir RFID hex apenas se válido
+            .replace(/{RFID_DATA}/g, isValidRfid ? rfidContent.trim() : ''); // Substituir RFID apenas se válido
           
           // Remover texto "GRAVADO RFID: {RFID_STATUS}" completamente
           // Substituir {RFID_STATUS} por string vazia e remover linha completa se necessário
@@ -3018,27 +3831,64 @@ app.post('/api/print-all', async (req, res) => {
           // Remover qualquer linha que contenha "GRAVADO RFID" (com ou sem placeholder)
           workingZPL = workingZPL.replace(/[^\n]*GRAVADO RFID[^\n]*\n?/g, '');
           
-          // Verificar se ainda há comandos RFID restantes e remover TODOS (print-all)
-          // Remover comandos RFID mesmo que estejam vazios ou incompletos
-          workingZPL = workingZPL.replace(/\^RFW[^\^]*\^FS/g, ''); // Remove ^RFW
-          workingZPL = workingZPL.replace(/\^RFR[^\^]*\^FS/g, ''); // Remove ^RFR
-          workingZPL = workingZPL.replace(/\^RFI[^\^]*\^FS/g, ''); // Remove ^RFI
-          workingZPL = workingZPL.replace(/\^RFT[^\^]*\^FS/g, ''); // Remove ^RFT
-          workingZPL = workingZPL.replace(/\^RFU[^\^]*\^FS/g, ''); // Remove ^RFU
-          // Remover qualquer comando que comece com ^RF (catch-all)
-          workingZPL = workingZPL.replace(/\^RF[^\^]*\^FS/g, '');
-          // Remover comandos RFID que não terminam com ^FS (casos incompletos)
-          workingZPL = workingZPL.replace(/\^RFW[^\n]*/g, '');
-          workingZPL = workingZPL.replace(/\^RFR[^\n]*/g, '');
-          workingZPL = workingZPL.replace(/\^RFI[^\n]*/g, '');
-          workingZPL = workingZPL.replace(/\^RFT[^\n]*/g, '');
-          workingZPL = workingZPL.replace(/\^RFU[^\n]*/g, '');
+          // IMPORTANTE: Processar comandos RFID de forma mais robusta (print-all)
+          // Primeiro, remover qualquer comando RFID com dados vazios (que causaria "void")
+          // Isso remove comandos como ^RFW,H,2,12,1^FD^FS (sem dados)
+          workingZPL = workingZPL.replace(/\^RFW[^\^]*\^FD\s*\^FS/g, ''); // Remove ^RFW com ^FD vazio
+          workingZPL = workingZPL.replace(/\^RFW[^\^]*\^FD\{RFID_DATA\}\^FS/g, ''); // Remove ^RFW com placeholder não substituído
           
-          if (workingZPL.includes('^RF')) {
-            console.warn(`[RFID] ⚠️ Aviso: Ainda há comandos RFID no ZPL após remoção, removendo novamente... (print-all)`);
-            // Última tentativa: remover qualquer coisa que comece com ^RF até o próximo ^ ou quebra de linha
-            workingZPL = workingZPL.replace(/\^RF[^\^\\n]*/g, '');
+          // Agora, se houver dados RFID válidos, garantir que o comando está correto
+          if (isValidRfid) {
+            const trimmedRfid = rfidContent.trim();
+            const expectedRfidCommand = `^RFW,H,2,12,1^FD${trimmedRfid}^FS`;
+            
+            if (workingZPL.includes(expectedRfidCommand)) {
+              console.log(`[RFID] ✅ Comando RFID válido no ZPL (print-all): ${trimmedRfid}`);
+            } else if (workingZPL.includes('^RFW')) {
+              // Se o comando RFID existe mas não foi substituído corretamente, substituir manualmente
+              workingZPL = workingZPL.replace(/\^RFW,H,2,12,1^FD[^\^]*\^FS/g, expectedRfidCommand);
+              console.log(`[RFID] ✅ Comando RFID substituído manualmente (print-all): ${trimmedRfid}`);
+            } else {
+              // Se não houver comando RFID no template, inserir antes de ^PQ
+              const rfidCommand = `^RFW,H,2,12,1^FD${trimmedRfid}^FS\n`;
+              workingZPL = workingZPL.replace(/\^PQ/g, `${rfidCommand}^PQ`);
+              console.log(`[RFID] ✅ Comando RFID inserido no ZPL (print-all): ${trimmedRfid}`);
+            }
+          } else {
+            // Se não houver dados RFID válidos, remover TODOS os comandos RFID para evitar "void"
+            console.warn(`[RFID] ⚠️ Nenhum dado RFID válido disponível (print-all), removendo TODOS os comandos RFID para evitar "void"`);
+            // Remover comandos RFID de forma mais abrangente
+            workingZPL = workingZPL.replace(/\^RFW[^\^]*\^FS/g, ''); // Remove ^RFW com ^FS
+            workingZPL = workingZPL.replace(/\^RFR[^\^]*\^FS/g, ''); // Remove ^RFR
+            workingZPL = workingZPL.replace(/\^RFI[^\^]*\^FS/g, ''); // Remove ^RFI
+            workingZPL = workingZPL.replace(/\^RFT[^\^]*\^FS/g, ''); // Remove ^RFT
+            workingZPL = workingZPL.replace(/\^RFU[^\^]*\^FS/g, ''); // Remove ^RFU
+            workingZPL = workingZPL.replace(/\^RF[^\^]*\^FS/g, ''); // Remove qualquer ^RF com ^FS
+            // Remover também comandos que podem estar em múltiplas linhas
+            workingZPL = workingZPL.replace(/\^RFW[^\n]*\n?/g, '');
+            workingZPL = workingZPL.replace(/\^RFR[^\n]*\n?/g, '');
+            workingZPL = workingZPL.replace(/\^RFI[^\n]*\n?/g, '');
+            workingZPL = workingZPL.replace(/\^RFT[^\n]*\n?/g, '');
+            workingZPL = workingZPL.replace(/\^RFU[^\n]*\n?/g, '');
+            // Remover qualquer comando ^RF que possa ter ficado
+            workingZPL = workingZPL.replace(/\^RF[^\n]*\n?/g, '');
+            console.log(`[RFID] ✅ Todos os comandos RFID removidos do ZPL (print-all)`);
           }
+          
+          // VERIFICAÇÃO FINAL DE SEGURANÇA: Remover qualquer comando RFID inválido que possa ter passado (print-all)
+          // Isso garante que não há comandos RFID com dados vazios ou inválidos que causariam "void"
+          const invalidRfidPatterns = [
+            /\^RFW[^\^]*\^FD\s*\^FS/g,  // ^RFW com ^FD vazio
+            /\^RFW[^\^]*\^FD\{[^}]+\}\^FS/g,  // ^RFW com placeholder não substituído
+            /\^RFW[^\^]*\^FD\^FS/g,  // ^RFW com ^FD sem dados
+          ];
+          invalidRfidPatterns.forEach(pattern => {
+            const matches = workingZPL.match(pattern);
+            if (matches && matches.length > 0) {
+              console.warn(`[RFID] ⚠️ Comando RFID inválido detectado e removido (print-all): ${matches[0].substring(0, 50)}...`);
+              workingZPL = workingZPL.replace(pattern, '');
+            }
+          });
           
           // Verificar se ainda há placeholders não substituídos que possam causar "void"
           // IMPORTANTE: Não remover {IMAGE} se ainda estiver presente (pode ser inserido depois)
@@ -3121,6 +3971,27 @@ app.post('/api/print-all', async (req, res) => {
             console.warn(`[AVISO] [print-all] Placeholder {IMAGE} ainda presente no ZPL final - imagem pode não ter sido inserida`);
           }
 
+          // VERIFICAÇÃO FINAL CRÍTICA: Garantir que RFID está presente no ZPL quando deveria estar (print-all)
+          const hasRfidCommand = workingZPL.includes('^RFW');
+          const isValidRfidFinal = printWithRFID && rfidContent && typeof rfidContent === 'string' && rfidContent.trim().length > 0;
+          
+          if (isValidRfidFinal && !hasRfidCommand) {
+            console.error(`[RFID] ❌ ERRO CRÍTICO (print-all): RFID válido (${rfidContent}) mas comando ^RFW não encontrado no ZPL!`);
+            console.error(`[RFID] ❌ Inserindo comando RFID de emergência...`);
+            const rfidCommand = `^RFW,H,2,12,1^FD${rfidContent.trim()}^FS\n`;
+            workingZPL = workingZPL.replace(/\^PQ/g, `${rfidCommand}^PQ`);
+            console.log(`[RFID] ✅ Comando RFID inserido de emergência (print-all): ${rfidContent}`);
+          } else if (!isValidRfidFinal && hasRfidCommand) {
+            console.error(`[RFID] ❌ ERRO CRÍTICO (print-all): Comando ^RFW encontrado no ZPL mas RFID inválido! Removendo...`);
+            workingZPL = workingZPL.replace(/\^RFW[^\^]*\^FS/g, '');
+            workingZPL = workingZPL.replace(/\^RFW[^\n]*\n?/g, '');
+            console.log(`[RFID] ✅ Comandos RFID removidos de emergência (print-all, RFID inválido)`);
+          } else if (isValidRfidFinal && hasRfidCommand) {
+            console.log(`[RFID] ✅ Verificação final (print-all): RFID válido (${rfidContent}) e comando ^RFW presente no ZPL`);
+          } else {
+            console.log(`[RFID] ✅ Verificação final (print-all): Sem RFID (esperado) e sem comandos ^RFW no ZPL`);
+          }
+
           // Log completo do ZPL para debug
           console.log('\n============ ZPL FINAL GERADO (PRINT-ALL) ============');
           console.log(workingZPL);
@@ -3148,6 +4019,20 @@ app.post('/api/print-all', async (req, res) => {
           // Imprimir cada etiqueta individual (1 cópia por vez para manter sequência)
           const printResult = await pythonUSBIntegration.sendZPL(workingZPL, 'ascii', 1);
           
+          // Registrar impressão no banco de dados (se sucesso)
+          if (pool && printWithRFID && printResult.success && rfidContent) {
+            try {
+              await pool.query(`
+                INSERT INTO senda.print_log (epc_id, barcode, vpn, po, sequence)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (epc_id) DO NOTHING
+              `, [rfidContent, sequentialBarcode, item.VPN || null, poClean || null, seq]);
+              console.log(`[PRINT-LOG] ✅ Etiqueta registrada no banco: EPC=${rfidContent}`);
+            } catch (logError) {
+              console.warn(`[PRINT-LOG] ⚠️ Erro ao registrar impressão no banco: ${logError.message}`);
+            }
+          }
+          
           if (!printResult.success) {
             console.error(`[PRINT] [print-all] ❌ Erro ao imprimir etiqueta ${seq}/${itemQty}: ${printResult.error}`);
             // Se o erro for de conexão, tentar reconectar e imprimir novamente uma vez
@@ -3158,10 +4043,25 @@ app.post('/api/print-all', async (req, res) => {
                 const retryResult = await pythonUSBIntegration.sendZPL(workingZPL, 'ascii', 1);
                 if (retryResult.success) {
                   console.log(`[PRINT] [print-all] ✅ Reimpressão bem-sucedida após reconexão!`);
+                  
+                  // Registrar impressão no banco de dados
+                  if (pool && printWithRFID && retryResult.success && rfidContent) {
+                    try {
+                      await pool.query(`
+                        INSERT INTO senda.print_log (epc_id, barcode, vpn, po, sequence)
+                        VALUES ($1, $2, $3, $4, $5)
+                        ON CONFLICT (epc_id) DO NOTHING
+                      `, [rfidContent, sequentialBarcode, item.VPN || null, poClean || null, seq]);
+                      console.log(`[PRINT-LOG] ✅ Etiqueta registrada no banco: EPC=${rfidContent}`);
+                    } catch (logError) {
+                      console.warn(`[PRINT-LOG] ⚠️ Erro ao registrar impressão no banco: ${logError.message}`);
+                    }
+                  }
+                  
                   results.push({
                     item: `${styleName} (${seq}/${itemQty})`,
                     barcode: sequentialBarcode,
-                    rfid: rfidContent,
+            rfid: printWithRFID ? rfidContent : null,
                     success: true,
                     message: `Etiqueta ${seq} impressa com sucesso (após reconexão)`,
                     details: retryResult.result
@@ -3177,10 +4077,24 @@ app.post('/api/print-all', async (req, res) => {
               throw new Error(printResult.error || 'Erro desconhecido ao imprimir');
             }
           } else {
+          // Registrar impressão no banco de dados
+          if (pool && printWithRFID && printResult.success && rfidContent) {
+            try {
+                      await pool.query(`
+                        INSERT INTO senda.print_log (epc_id, barcode, vpn, po, sequence)
+                        VALUES ($1, $2, $3, $4, $5)
+                        ON CONFLICT (epc_id) DO NOTHING
+                      `, [rfidContent, sequentialBarcode, item.VPN || null, poClean || null, seq]);
+              console.log(`[PRINT-LOG] ✅ Etiqueta registrada no banco: EPC=${rfidContent}`);
+            } catch (logError) {
+              console.warn(`[PRINT-LOG] ⚠️ Erro ao registrar impressão no banco: ${logError.message}`);
+            }
+          }
+          
           results.push({
             item: `${styleName} (${seq}/${itemQty})`,
             barcode: sequentialBarcode,
-            rfid: rfidContent,
+            rfid: printWithRFID ? rfidContent : null,
             success: printResult.success,
             message: printResult.success ? `Etiqueta ${seq} impressa com sucesso` : printResult.error,
             details: printResult.result
@@ -6390,6 +7304,89 @@ app.post('/api/mupa/read-rfid', async (req, res) => {
   }
 });
 
+// Verificar se RFID foi gravado na etiqueta
+app.post('/api/rfid/verify', async (req, res) => {
+  try {
+    const { expectedValue } = req.body;
+    
+    console.log('🔍 Verificando gravação RFID...');
+    
+    // ZPL para ler o RFID
+    const readZPL = `^XA
+^FO50,50^A0N,30,30^FDVERIFICACAO RFID^FS
+^FO50,100^A0N,25,25^FDLendo RFID da etiqueta...^FS
+^RFR,H,0,12,2^FS
+^FO50,130^A0N,20,20^FDVerifique o display da impressora^FS
+^FO50,160^A0N,18,18^FDou use um leitor RFID externo^FS
+^XZ`;
+    
+    // Enviar comando de leitura para impressora
+    const printerName = process.env.PRINTER_NAME || "ZDesigner ZD621R-203dpi ZPL";
+    
+    // Usar o método de impressão existente
+    const fs = require('fs');
+    const path = require('path');
+    const tempDir = path.join(__dirname, 'temp');
+    
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    
+    const tempFile = path.join(tempDir, `rfid_verify_${Date.now()}.zpl`);
+    fs.writeFileSync(tempFile, readZPL, 'utf8');
+    
+    try {
+      const { exec } = require('child_process');
+      const command = process.platform === 'win32' 
+        ? `copy "${tempFile}" "${printerName}"`
+        : `lp -d "${printerName}" "${tempFile}"`;
+      
+      exec(command, (error, stdout, stderr) => {
+        // Limpar arquivo temporário
+        if (fs.existsSync(tempFile)) {
+          fs.unlinkSync(tempFile);
+        }
+        
+        if (error) {
+          console.error('Erro ao enviar comando de verificação:', error);
+          return res.status(500).json({
+            success: false,
+            error: `Erro ao enviar comando: ${error.message}`,
+            timestamp: new Date().toISOString()
+          });
+        }
+        
+        res.json({
+          success: true,
+          message: 'Comando de verificação RFID enviado com sucesso',
+          instructions: {
+            method1: 'Verifique o display da impressora Zebra para ver o valor lido',
+            method2: 'Use um leitor RFID externo para ler a etiqueta impressa',
+            method3: 'Verifique os logs da impressora para resposta via USB/Serial',
+            expectedValue: expectedValue || 'Não fornecido'
+          },
+          zpl: readZPL,
+          timestamp: new Date().toISOString()
+        });
+      });
+    } catch (error) {
+      // Limpar arquivo temporário em caso de erro
+      if (fs.existsSync(tempFile)) {
+        fs.unlinkSync(tempFile);
+      }
+      throw error;
+    }
+    
+  } catch (error) {
+    console.error('Erro ao verificar RFID:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // Teste completo MUPA
 app.post('/api/mupa/test', async (req, res) => {
   try {
@@ -6723,7 +7720,7 @@ try {
       }
       
       // Usar a porta detectada pelo starter (se disponível) ou tentar detectar automaticamente
-      const detectedPort = process.env._IMAGE_PROXY_ACTUAL_PORT || process.env.IMAGE_PROXY_PORT || '8000';
+      const detectedPort = process.env._IMAGE_PROXY_ACTUAL_PORT || process.env.IMAGE_PROXY_PORT || '8002';
       const imageProxyUrl = process.env.IMAGE_PROXY_URL || `http://127.0.0.1:${detectedPort}`;
       
       console.log(`[STARTUP] Tentando conectar na API Python em ${imageProxyUrl}...`);

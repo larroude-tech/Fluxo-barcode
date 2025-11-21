@@ -43,8 +43,9 @@ async function detectImageProxyPort() {
     }
   }
 
-  // Tentar detectar automaticamente testando as portas comuns (8000 primeiro, depois 8001, 8002)
-  const portsToTry = ['8000', '8001', '8002'];
+  // Tentar detectar automaticamente testando as portas comuns (8002 primeiro, depois 8001, 8000)
+  // 8002 é preferida porque 8000 e 8001 podem estar ocupadas por outros processos
+  const portsToTry = ['8002', '8001', '8003', '8004', '8000'];
   
   for (const port of portsToTry) {
     try {
@@ -62,11 +63,11 @@ async function detectImageProxyPort() {
     }
   }
 
-  // Se não encontrou nenhuma porta, usar 8000 como padrão
-  console.log(`[IMAGE-PROXY] ⚠️ Não foi possível detectar a porta da API, usando padrão: 8000`);
-  detectedImageProxyPort = '8000';
+  // Se não encontrou nenhuma porta, usar 8002 como padrão
+  console.log(`[IMAGE-PROXY] ⚠️ Não foi possível detectar a porta da API, usando padrão: 8002`);
+  detectedImageProxyPort = '8002';
   lastPortDetectionTime = now;
-  return '8000';
+  return '8002';
 }
 
 /**
@@ -205,7 +206,8 @@ const normalizeLabelRow = async (row = {}, imageUrlMap = null) => {
     REF: referencia,
     QTY: qty,
     PO: po,
-    IMAGE_URL: imageUrl
+    IMAGE_URL: imageUrl,
+    SKU: sku
   };
 };
 

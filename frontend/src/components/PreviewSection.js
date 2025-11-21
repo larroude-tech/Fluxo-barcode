@@ -23,6 +23,23 @@ const REQUIRED_FIELDS = [
   }
 ];
 
+const FILTER_FIELD_CANDIDATES = [
+  { key: 'STYLE_NAME', label: 'Produto' },
+  { key: 'SKU', label: 'SKU' },
+  { key: 'COLOR', label: 'Cor' },
+  { key: 'SIZE', label: 'Tamanho' }
+];
+
+const resolveFieldValue = (item, key) => {
+  if (!item) return '';
+
+  if (key === 'SKU') {
+    return item.SKU || item.sku || '';
+  }
+
+  return item[key] !== undefined && item[key] !== null ? item[key] : '';
+};
+
 // Componente atualizado para exibir todas as etiquetas em tamanho real
 
 const validateDefaultField = (value) => {
@@ -49,6 +66,8 @@ const PreviewSection = ({ data, onBackToSelection }) => {
   const [isPrintingAll, setIsPrintingAll] = useState(false);
   const [selectedPrintLayout, setSelectedPrintLayout] = useState('Default');
   const [availableLayouts, setAvailableLayouts] = useState([]);
+  const [printWithRFID, setPrintWithRFID] = useState(true);
+  const [filters, setFilters] = useState({});
 
   const totalLabels = useMemo(() => {
     if (!data || data.length === 0) {
@@ -58,35 +77,112 @@ const PreviewSection = ({ data, onBackToSelection }) => {
   }, [data]);
 
   // Filtrar dados baseado no termo de pesquisa
-  const filteredData = useMemo(() => {
-    if (!data || !searchTerm.trim()) {
-      return data || [];
+const filterFields = useMemo(() => {
+  if (!data || data.length === 0) {
+    return [];
+  }
+
+  return FILTER_FIELD_CANDIDATES.filter(field =>
+    data.some(item => {
+      const value = resolveFieldValue(item, field.key);
+      return value !== undefined && value !== null && String(value).trim() !== '';
+    })
+  );
+}, [data]);
+
+const filterOptions = useMemo(() => {
+  const options = {};
+  if (!data || !filterFields.length) {
+    return options;
+  }
+
+  filterFields.forEach(({ key }) => {
+    const valueSet = new Set();
+    data.forEach((item) => {
+      const value = resolveFieldValue(item, key);
+      if (value !== undefined && value !== null) {
+        const normalized = String(value).trim();
+        if (normalized !== '') {
+          valueSet.add(normalized);
+        }
+      }
+    });
+    options[key] = Array.from(valueSet).sort((a, b) =>
+      a.localeCompare(b, 'pt-BR', { sensitivity: 'base' })
+    );
+  });
+
+  return options;
+}, [data, filterFields]);
+
+useEffect(() => {
+  setFilters(prev => {
+    const nextEntries = Object.entries(prev).filter(([key]) =>
+      filterFields.some(field => field.key === key)
+    );
+    if (nextEntries.length === Object.keys(prev).length) {
+      return prev;
     }
 
-    const search = searchTerm.toLowerCase().trim();
-    return data.filter(item => {
-      // Buscar em todos os campos principais
+    return Object.fromEntries(nextEntries);
+  });
+}, [filterFields]);
+
+const filteredData = useMemo(() => {
+  if (!data || data.length === 0) {
+    return [];
+  }
+
+  const search = searchTerm.toLowerCase().trim();
+
+  return data.filter(item => {
       const searchableFields = [
         item.STYLE_NAME,
         item.VPN,
         item.COLOR,
         item.SIZE,
         item.QTY?.toString(),
-        // Adicionar outros campos se existirem
         item.BRAND,
         item.CATEGORY,
         item.DESCRIPTION
       ];
 
-      return searchableFields.some(field => 
-        field && field.toString().toLowerCase().includes(search)
-      );
+    const matchesSearch = !search
+      ? true
+      : searchableFields.some(field =>
+          field && field.toString().toLowerCase().includes(search)
+        );
+
+    if (!matchesSearch) {
+      return false;
+    }
+
+    return filterFields.every(({ key }) => {
+      const selectedOption = filters[key];
+      if (!selectedOption) {
+        return true;
+      }
+
+      const value = resolveFieldValue(item, key);
+      if (value === undefined || value === null) {
+        return false;
+      }
+
+      return value.toString().trim().toLowerCase() === selectedOption.toLowerCase();
     });
-  }, [data, searchTerm]);
+  });
+}, [data, filters, filterFields, searchTerm]);
 
   // Limpar pesquisa
   const clearSearch = () => {
     setSearchTerm('');
+  };
+
+  const handleFilterChange = (fieldKey, value) => {
+    setFilters(prev => ({
+      ...prev,
+      [fieldKey]: value
+    }));
   };
 
   // Abrir modal de detalhes
@@ -139,11 +235,11 @@ const PreviewSection = ({ data, onBackToSelection }) => {
   }, []);
 
   const invalidItems = useMemo(() => {
-    if (!data || data.length === 0) {
+    if (!filteredData || filteredData.length === 0) {
       return [];
     }
 
-    return data
+    return filteredData
       .map((item, index) => {
         const missingFields = getMissingFields(item);
         if (missingFields.length === 0) {
@@ -157,7 +253,7 @@ const PreviewSection = ({ data, onBackToSelection }) => {
         };
       })
       .filter(Boolean);
-  }, [data, getMissingFields]);
+  }, [filteredData, getMissingFields]);
 
   const fetchSinglePreview = useCallback(async (item) => {
     const normalized = normalizeItems([item]);
@@ -224,12 +320,12 @@ const PreviewSection = ({ data, onBackToSelection }) => {
   }, [data, fetchSinglePreview]);
 
   const printableItems = useMemo(() => {
-    if (!data || data.length === 0) {
+    if (!filteredData || filteredData.length === 0) {
       return [];
     }
 
-    return data.filter((item) => getMissingFields(item).length === 0);
-  }, [data, getMissingFields]);
+    return filteredData.filter((item) => getMissingFields(item).length === 0);
+  }, [filteredData, getMissingFields]);
 
   const totalPrintableLabels = useMemo(() => {
     if (printableItems.length === 0) {
@@ -253,8 +349,6 @@ const PreviewSection = ({ data, onBackToSelection }) => {
       return;
     }
 
-    const skippedCount = data.length - printableItems.length;
-
     setIsPrintingAll(true);
     setError(null);
 
@@ -262,7 +356,8 @@ const PreviewSection = ({ data, onBackToSelection }) => {
       const normalized = normalizeItems(printableItems);
       const response = await axios.post(`${API_BASE_URL}/print-all`, {
         data: normalized,
-        layoutName: selectedPrintLayout
+        layoutName: selectedPrintLayout,
+        printWithRFID
       }, {
         timeout: 300000
       });
@@ -316,7 +411,8 @@ const PreviewSection = ({ data, onBackToSelection }) => {
       const response = await axios.post(`${API_BASE_URL}/print-individual`, {
         data: printData,
         quantity: qty,
-        layoutName: selectedPrintLayout
+        layoutName: selectedPrintLayout,
+        printWithRFID
       });
 
       if (response.data && response.data.results) {
@@ -401,6 +497,17 @@ const PreviewSection = ({ data, onBackToSelection }) => {
             Preview das Etiquetas
           </div>
           <div className="step-actions" style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <div className="rfid-toggle">
+              <span>Modo RFID</span>
+              <button
+                type="button"
+                className={`rfid-toggle-button btn ${printWithRFID ? 'btn-success' : 'btn-secondary'}`}
+                onClick={() => setPrintWithRFID((prev) => !prev)}
+                title={printWithRFID ? 'RFID habilitado (grava a tag)' : 'Modo visual (remove comandos RFID)'}
+              >
+                {printWithRFID ? 'Com RFID (gravar)' : 'Sem RFID (apenas visual)'}
+              </button>
+            </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <label style={{ fontSize: '14px', fontWeight: 500, color: '#374151' }}>
                 Layout:
@@ -509,6 +616,30 @@ const PreviewSection = ({ data, onBackToSelection }) => {
           )}
 
         </div>
+        {filterFields.length > 0 && (
+          <div className="filter-controls">
+            {filterFields.map((field) => (
+              <div key={`filter-${field.key}`} className="filter-control">
+                <label>{field.label}</label>
+                <select
+                  value={filters[field.key] || ''}
+                  onChange={(e) => handleFilterChange(field.key, e.target.value)}
+                  disabled={isPrintingAll}
+                >
+                  <option value="">Todos</option>
+                  {(filterOptions[field.key] || []).map((optionValue) => (
+                    <option key={optionValue} value={optionValue}>
+                      {optionValue}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ))}
+            <div className="filter-summary">
+              Mostrando {filteredData.length} de {data?.length || 0} itens
+            </div>
+          </div>
+        )}
       </div>
 
       {error && (

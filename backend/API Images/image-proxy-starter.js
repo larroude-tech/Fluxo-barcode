@@ -27,7 +27,8 @@ async function startImageProxy() {
 
   // Verificar e encontrar porta disponível
   const { execSync } = require('child_process');
-  let imageProxyPort = process.env.IMAGE_PROXY_PORT || '8000';
+  // Se IMAGE_PROXY_PORT não estiver definido, tentar 8002 primeiro (8000 e 8001 podem estar ocupadas)
+  let imageProxyPort = process.env.IMAGE_PROXY_PORT || '8002';
   
   // Função para verificar se uma porta está em uso
   function isPortInUse(port) {
@@ -48,21 +49,62 @@ async function startImageProxy() {
   function clearPort(port) {
     try {
       if (process.platform === 'win32') {
-        const portCheck = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: 'utf8', stdio: 'pipe' });
-        if (portCheck && portCheck.trim()) {
-          const lines = portCheck.trim().split('\n');
-          for (const line of lines) {
-            const parts = line.trim().split(/\s+/);
-            const pid = parts[parts.length - 1];
-            if (pid && !isNaN(pid)) {
-              try {
-                execSync(`taskkill /PID ${pid} /F`, { encoding: 'utf8', stdio: 'pipe' });
-                console.log(`[IMAGE-PROXY] ✅ Processo ${pid} encerrado na porta ${port}`);
-              } catch (killError) {
-                // Ignorar erros
+        // Tentar múltiplas formas de encontrar processos usando a porta
+        try {
+          // Método 1: netstat
+          const portCheck = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: 'utf8', stdio: 'pipe' });
+          if (portCheck && portCheck.trim()) {
+            const lines = portCheck.trim().split('\n');
+            for (const line of lines) {
+              const parts = line.trim().split(/\s+/);
+              const pid = parts[parts.length - 1];
+              if (pid && !isNaN(pid)) {
+                try {
+                  // Verificar se é um processo Python antes de matar
+                  const taskList = execSync(`tasklist /FI "PID eq ${pid}" /FO CSV`, { encoding: 'utf8', stdio: 'pipe' });
+                  if (taskList && taskList.includes('python')) {
+                    execSync(`taskkill /PID ${pid} /F`, { encoding: 'utf8', stdio: 'pipe' });
+                    console.log(`[IMAGE-PROXY] ✅ Processo Python ${pid} encerrado na porta ${port}`);
+                  }
+                } catch (killError) {
+                  // Tentar matar mesmo assim se for erro de permissão
+                  try {
+                    execSync(`taskkill /PID ${pid} /F`, { encoding: 'utf8', stdio: 'pipe' });
+                    console.log(`[IMAGE-PROXY] ✅ Processo ${pid} encerrado na porta ${port}`);
+                  } catch (e) {
+                    // Ignorar se não conseguir matar
+                  }
+                }
               }
             }
           }
+        } catch (e) {
+          // Ignorar erros de netstat
+        }
+        
+        // Método 2: Tentar matar todos os processos Python que possam estar usando a porta
+        try {
+          const pythonProcesses = execSync(`tasklist /FI "IMAGENAME eq python.exe" /FO CSV`, { encoding: 'utf8', stdio: 'pipe' });
+          if (pythonProcesses && pythonProcesses.includes('python.exe')) {
+            // Encontrar PIDs de processos Python
+            const lines = pythonProcesses.split('\n');
+            for (const line of lines) {
+              if (line.includes('python.exe')) {
+                const match = line.match(/"(\d+)"/);
+                if (match && match[1]) {
+                  const pid = match[1];
+                  try {
+                    execSync(`taskkill /PID ${pid} /F`, { encoding: 'utf8', stdio: 'pipe' });
+                    console.log(`[IMAGE-PROXY] ✅ Processo Python ${pid} encerrado (limpeza preventiva)`);
+                  } catch (e) {
+                    // Ignorar se não conseguir matar
+                  }
+                }
+              }
+            }
+          }
+        } catch (e) {
+          // Ignorar se não conseguir listar processos Python
         }
       } else {
         const portCheck = execSync(`lsof -ti:${port}`, { encoding: 'utf8', stdio: 'pipe' });
@@ -81,15 +123,16 @@ async function startImageProxy() {
         }
       }
       // Aguardar um pouco para a porta ser liberada
-      return new Promise(resolve => setTimeout(resolve, 1000));
+      return new Promise(resolve => setTimeout(resolve, 1500));
     } catch (error) {
       return Promise.resolve();
     }
   }
   
   // Se IMAGE_PROXY_PORT não estiver definido, tentar encontrar porta disponível
+  // Começar por 8002 porque 8000 e 8001 podem estar ocupadas por outros processos
   if (!process.env.IMAGE_PROXY_PORT) {
-    const portsToTry = ['8000', '8001', '8002'];
+    const portsToTry = ['8002', '8001', '8003', '8004', '8000'];
     let foundPort = null;
     
     for (const port of portsToTry) {
@@ -98,20 +141,21 @@ async function startImageProxy() {
       
       if (!portInUse) {
         foundPort = port;
+        console.log(`[IMAGE-PROXY] ✅ Porta ${port} está disponível`);
         break;
       } else {
         // Tentar liberar a porta
         console.log(`[IMAGE-PROXY] ⚠️ Porta ${port} em uso, tentando liberar...`);
         await clearPort(port);
         // Aguardar um pouco mais para garantir que a porta foi liberada
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        await new Promise(resolve => setTimeout(resolve, 2000));
         // Verificar novamente após limpar
         if (!isPortInUse(port)) {
           foundPort = port;
           console.log(`[IMAGE-PROXY] ✅ Porta ${port} liberada com sucesso`);
           break;
         } else {
-          console.log(`[IMAGE-PROXY] ⚠️ Porta ${port} ainda em uso após tentativa de liberação`);
+          console.log(`[IMAGE-PROXY] ⚠️ Porta ${port} ainda em uso após tentativa de liberação, tentando próxima...`);
         }
       }
     }
@@ -120,9 +164,9 @@ async function startImageProxy() {
       imageProxyPort = foundPort;
       console.log(`[IMAGE-PROXY] 🔍 Porta selecionada: ${imageProxyPort}`);
     } else {
-      // Se nenhuma porta estiver disponível, usar 8000 e deixar o Python reportar o erro
-      imageProxyPort = '8000';
-      console.log(`[IMAGE-PROXY] ⚠️ Nenhuma porta disponível (8000-8002), tentando usar ${imageProxyPort}`);
+      // Se nenhuma porta estiver disponível, tentar 8001 como fallback
+      imageProxyPort = '8001';
+      console.log(`[IMAGE-PROXY] ⚠️ Nenhuma porta disponível (8000-8004), tentando usar ${imageProxyPort}`);
       console.log(`[IMAGE-PROXY] 💡 Se falhar, defina IMAGE_PROXY_PORT no .env com uma porta diferente`);
     }
   } else {
@@ -131,7 +175,20 @@ async function startImageProxy() {
       console.log(`[IMAGE-PROXY] ⚠️ Porta ${imageProxyPort} (definida em IMAGE_PROXY_PORT) está em uso, tentando liberar...`);
       await clearPort(imageProxyPort);
       // Aguardar um pouco mais
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Se ainda estiver em uso, tentar portas alternativas
+      if (isPortInUse(imageProxyPort)) {
+        console.log(`[IMAGE-PROXY] ⚠️ Porta ${imageProxyPort} ainda em uso, tentando portas alternativas...`);
+        const altPorts = ['8001', '8002', '8003', '8004'];
+        for (const altPort of altPorts) {
+          if (!isPortInUse(altPort)) {
+            imageProxyPort = altPort;
+            console.log(`[IMAGE-PROXY] ✅ Usando porta alternativa: ${imageProxyPort}`);
+            break;
+          }
+        }
+      }
     }
   }
   
@@ -272,16 +329,48 @@ async function startImageProxy() {
     if (output && !output.includes('INFO:') && !output.includes('WARNING:')) {
       if (output.includes('WinError 10013') || 
           output.includes('WinError 10048') ||
+          output.includes('Errno 13') ||
           output.includes('address already in use') || 
           output.includes('EADDRINUSE') ||
           output.includes('error while attempting to bind')) {
         console.error(`[IMAGE-PROXY] [ERRO] ${output}`);
         console.error('[IMAGE-PROXY] ❌ Erro: Porta está em uso ou bloqueada');
         console.error(`[IMAGE-PROXY] 💡 Porta tentada: ${imageProxyPort}`);
-        console.error('[IMAGE-PROXY] 💡 Soluções:');
-        console.error('[IMAGE-PROXY]    1. Aguarde alguns segundos - pode estar liberando a porta');
-        console.error('[IMAGE-PROXY]    2. Encerre processos Python que possam estar usando a porta');
-        console.error('[IMAGE-PROXY]    3. Use uma porta diferente definindo IMAGE_PROXY_PORT no .env');
+        
+        // Tentar automaticamente uma porta alternativa
+        const altPorts = ['8001', '8002', '8003', '8004'];
+        let foundAltPort = null;
+        
+        for (const altPort of altPorts) {
+          if (altPort !== imageProxyPort && !isPortInUse(altPort)) {
+            foundAltPort = altPort;
+            break;
+          }
+        }
+        
+        if (foundAltPort) {
+          console.error(`[IMAGE-PROXY] 🔄 Tentando automaticamente porta alternativa: ${foundAltPort}`);
+          // Parar o processo atual
+          if (imageProxyProcess) {
+            imageProxyProcess.kill();
+            imageProxyProcess = null;
+          }
+          // Aguardar um pouco e tentar novamente com a porta alternativa
+          setTimeout(async () => {
+            const originalPort = process.env.IMAGE_PROXY_PORT;
+            process.env.IMAGE_PROXY_PORT = foundAltPort;
+            await startImageProxy();
+            if (originalPort) {
+              process.env.IMAGE_PROXY_PORT = originalPort;
+            }
+          }, 2000);
+        } else {
+          console.error('[IMAGE-PROXY] 💡 Soluções:');
+          console.error('[IMAGE-PROXY]    1. Aguarde alguns segundos - pode estar liberando a porta');
+          console.error('[IMAGE-PROXY]    2. Encerre processos Python que possam estar usando a porta');
+          console.error('[IMAGE-PROXY]    3. Use uma porta diferente definindo IMAGE_PROXY_PORT no .env');
+        }
+        
         // Não tentar reiniciar se for erro de porta - já vai tentar outra porta
         if (imageProxyProcess) {
           imageProxyProcess._skipRestart = true;
@@ -296,7 +385,7 @@ async function startImageProxy() {
   // Aguardar um pouco para verificar se iniciou corretamente
   setTimeout(() => {
     if (imageProxyProcess && !imageProxyProcess.killed) {
-      const port = process.env.IMAGE_PROXY_PORT || '8000';
+      const port = imageProxyPort || process.env.IMAGE_PROXY_PORT || '8002';
       console.log(`[IMAGE-PROXY] ✅ API iniciada com sucesso na porta ${port}`);
       restartAttempts = 0; // Resetar contador se iniciou com sucesso
     }

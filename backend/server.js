@@ -404,10 +404,10 @@ try {
 
 const app = express();
 // Cloud Run define PORT automaticamente (padrão: 8080)
-// Para desenvolvimento local, usa 3005 se PORT não estiver definido
-const PORT = process.env.PORT || 3005;
+// Para desenvolvimento local, usa 3005 se SERVER_PORT/PORT não estiver definido
+const SERVER_PORT = process.env.SERVER_PORT || process.env.PORT || 3005;
 
-console.log(`[INIT] Inicializando servidor na porta ${PORT}`);
+console.log(`[INIT] Inicializando servidor na porta ${SERVER_PORT}`);
 console.log(`[INIT] NODE_ENV=${process.env.NODE_ENV || 'not set'}`);
 
 // Configurar CORS PRIMEIRO (antes de qualquer rota)
@@ -7004,7 +7004,7 @@ app.post('/api/test-zpl', async (req, res) => {
     // 1. Validar ZPL
     try {
       // Usar base URL configurável ou inferir do request
-      const baseUrl = process.env.BASE_URL || (req ? `${req.protocol}://${req.get('host')}` : `http://localhost:${PORT}`);
+      const baseUrl = process.env.BASE_URL || (req ? `${req.protocol}://${req.get('host')}` : `http://localhost:${SERVER_PORT}`);
       const validateResponse = await fetch(`${baseUrl}/api/validate-zpl`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -7029,7 +7029,7 @@ app.post('/api/test-zpl', async (req, res) => {
     // 3. Enviar para impressora
     try {
       // Usar base URL configurável ou inferir do request
-      const baseUrl = process.env.BASE_URL || (req ? `${req.protocol}://${req.get('host')}` : `http://localhost:${PORT}`);
+      const baseUrl = process.env.BASE_URL || (req ? `${req.protocol}://${req.get('host')}` : `http://localhost:${SERVER_PORT}`);
       const sendResponse = await fetch(`${baseUrl}/api/send-zpl-direct`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -7567,7 +7567,7 @@ if (frontendExists) {
 
 // Iniciar servidor com tratamento de erros robusto
 console.log('[STARTUP] Iniciando servidor...');
-console.log(`[STARTUP] PORT=${PORT}`);
+console.log(`[STARTUP] SERVER_PORT=${SERVER_PORT}`);
 console.log(`[STARTUP] NODE_ENV=${process.env.NODE_ENV || 'not set'}`);
 
 let server;
@@ -7637,12 +7637,12 @@ function checkAndClearPort(port) {
 // Função para iniciar o servidor
 function startServer() {
   // Verificar e limpar porta antes de iniciar
-  checkAndClearPort(PORT);
-try {
-  server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ Servidor rodando na porta ${PORT}`);
-    console.log(`✅ Servidor escutando em 0.0.0.0:${PORT}`);
-    console.log(`✅ Health check disponível em http://0.0.0.0:${PORT}/health`);
+  checkAndClearPort(SERVER_PORT);
+  try {
+  server = app.listen(SERVER_PORT, '0.0.0.0', () => {
+    console.log(`✅ Servidor rodando na porta ${SERVER_PORT}`);
+    console.log(`✅ Servidor escutando em 0.0.0.0:${SERVER_PORT}`);
+    console.log(`✅ Health check disponível em http://0.0.0.0:${SERVER_PORT}/health`);
   });
 
     server.on('listening', () => {

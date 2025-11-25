@@ -39,9 +39,28 @@ echo    [OK] Verificacao de portas concluida
 echo.
 
 REM ========================================
-REM ETAPA 1: INICIALIZACAO DO BACKEND
+REM ETAPA 1: INICIALIZACAO DO FRONTEND
 REM ========================================
-echo [ETAPA 1/4] Iniciando Backend Node.js...
+echo [ETAPA 1/4] Iniciando Frontend React...
+echo.
+echo    [INFO] Frontend sera iniciado na porta 3000
+echo    [INFO] Aguarde as seguintes mensagens no console do Frontend:
+echo.
+echo    Mensagens esperadas:
+echo      - Compiled successfully!
+echo      - webpack compiled
+echo      - Local: http://localhost:3000
+echo.
+start "Frontend RFID - Porta 3000" cmd /k "cd /d %~dp0.. && cd frontend && npm start"
+echo    [OK] Frontend iniciado! Verifique a janela do Frontend para acompanhar o progresso.
+echo    [INFO] Aguardando 3 segundos para o Frontend iniciar...
+timeout /t 3 /nobreak >nul
+echo.
+
+REM ========================================
+REM ETAPA 2: INICIALIZACAO DO BACKEND
+REM ========================================
+echo [ETAPA 2/4] Iniciando Backend Node.js...
 echo.
 echo    [INFO] Backend sera iniciado na porta 3005
 echo    [INFO] Backend iniciara automaticamente a API Python Image Proxy
@@ -65,9 +84,9 @@ timeout /t 5 /nobreak >nul
 echo.
 
 REM ========================================
-REM ETAPA 2: VERIFICACAO DA API PYTHON
+REM ETAPA 3: VERIFICACAO DA API PYTHON
 REM ========================================
-echo [ETAPA 2/4] Verificando API Python Image Proxy...
+echo [ETAPA 3/4] Verificando API Python Image Proxy...
 echo.
 echo    [INFO] Verificando se a API Python esta respondendo...
 echo    [INFO] Tentando portas 8000, 8001, 8002...
@@ -100,25 +119,6 @@ if !API_READY! equ 0 (
 echo.
 
 REM ========================================
-REM ETAPA 3: INICIALIZACAO DO FRONTEND
-REM ========================================
-echo [ETAPA 3/4] Iniciando Frontend React...
-echo.
-echo    [INFO] Frontend sera iniciado na porta 3000
-echo    [INFO] Aguarde as seguintes mensagens no console do Frontend:
-echo.
-echo    Mensagens esperadas:
-echo      - Compiled successfully!
-echo      - webpack compiled
-echo      - Local: http://localhost:3000
-echo.
-start "Frontend RFID - Porta 3000" cmd /k "cd /d %~dp0.. && cd frontend && npm start"
-echo    [OK] Frontend iniciado! Verifique a janela do Frontend para acompanhar o progresso.
-echo    [INFO] Aguardando 3 segundos...
-timeout /t 3 /nobreak >nul
-echo.
-
-REM ========================================
 REM ETAPA 4: RESUMO E INFORMACOES
 REM ========================================
 echo [ETAPA 4/4] Resumo da inicializacao
@@ -127,11 +127,11 @@ echo ========================================
 echo   SERVICOS INICIADOS
 echo ========================================
 echo.
-echo   [1] API Python Image Proxy
-echo       URL: http://localhost:8000 (ou 8001/8002)
-echo       Status: Verifique a janela do Backend
-echo       Funcao: Busca imagens do GitHub baseado em referencias
-echo       Endpoint: /image/reference/{referencia}
+echo   [1] Frontend React
+echo       URL: http://localhost:3000
+echo       Status: Verifique a janela do Frontend
+echo       Funcao: Interface web para o sistema
+echo       Hot Reload: Ativado (webpack)
 echo.
 echo   [2] Backend Node.js
 echo       URL: http://localhost:3005
@@ -139,11 +139,11 @@ echo       Status: Verifique a janela do Backend
 echo       Funcao: API REST para gerenciamento de etiquetas
 echo       Hot Reload: Ativado (nodemon)
 echo.
-echo   [3] Frontend React
-echo       URL: http://localhost:3000
-echo       Status: Verifique a janela do Frontend
-echo       Funcao: Interface web para o sistema
-echo       Hot Reload: Ativado (webpack)
+echo   [3] API Python Image Proxy
+echo       URL: http://localhost:8000 (ou 8001/8002)
+echo       Status: Verifique a janela do Backend
+echo       Funcao: Busca imagens do GitHub baseado em referencias
+echo       Endpoint: /image/reference/{referencia}
 echo.
 echo ========================================
 echo   FLUXO DE FUNCIONAMENTO

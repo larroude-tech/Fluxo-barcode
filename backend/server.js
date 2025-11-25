@@ -558,7 +558,76 @@ app.use(cors({
 const maxUploadSize = process.env.MAX_UPLOAD_SIZE || '50mb';
 app.use(express.json({ limit: maxUploadSize }));
 app.use(express.urlencoded({ limit: maxUploadSize, extended: true }));
-// express.static para frontend será configurado depois, se o frontend existir
+
+// ============================================================
+// CONFIGURAR FRONTEND PRIMEIRO (antes do backend/rotas)
+// ============================================================
+console.log('[INIT] 🎨 Configurando frontend primeiro...');
+
+// Configurar rota catch-all para servir frontend React (deve ser configurado antes das rotas de API)
+// Isso permite que o React Router funcione corretamente (SPA)
+const frontendPath = path.join(__dirname, 'public', 'app');
+const indexPath = path.join(frontendPath, 'index.html');
+
+// Logs detalhados para debug
+console.log('[INIT] Verificando frontend...');
+console.log(`[INIT] __dirname: ${__dirname}`);
+console.log(`[INIT] Frontend path: ${frontendPath}`);
+console.log(`[INIT] Index path: ${indexPath}`);
+console.log(`[INIT] Index exists: ${fs.existsSync(indexPath)}`);
+
+// Verificar se o diretório public/app existe
+const publicAppExists = fs.existsSync(frontendPath);
+console.log(`[INIT] Public/app directory exists: ${publicAppExists}`);
+
+if (publicAppExists) {
+  // Listar arquivos no diretório para debug
+  try {
+    const files = fs.readdirSync(frontendPath);
+    console.log(`[INIT] Arquivos em public/app: ${files.slice(0, 10).join(', ')}${files.length > 10 ? '...' : ''}`);
+  } catch (err) {
+    console.log(`[INIT] Erro ao listar arquivos: ${err.message}`);
+  }
+}
+
+// Verificar se o frontend existe (pode não existir em desenvolvimento local)
+const frontendExists = fs.existsSync(indexPath);
+let absoluteFrontendPath;
+let absoluteIndexPath;
+
+if (frontendExists) {
+  // Servir arquivos estáticos do frontend (JS, CSS, imagens, etc.)
+  // Usar caminho absoluto para garantir que funcione no Cloud Run
+  absoluteFrontendPath = path.resolve(frontendPath);
+  absoluteIndexPath = path.resolve(indexPath);
+  
+  console.log(`[INIT] Absolute frontend path: ${absoluteFrontendPath}`);
+  console.log(`[INIT] Absolute index path: ${absoluteIndexPath}`);
+  
+  // Servir arquivos estáticos do frontend PRIMEIRO
+  app.use(express.static(absoluteFrontendPath));
+  
+  console.log('[INIT] ✅ Frontend React configurado para servir arquivos estáticos');
+  console.log(`[INIT] Frontend path: ${absoluteFrontendPath}`);
+} else {
+  // Em desenvolvimento local: frontend roda separado na porta 3000 (React dev server)
+  // Backend apenas serve API na porta 3005
+  // Em produção (Cloud Run): frontend é buildado e copiado para backend/public/app
+  const isDevelopment = process.env.NODE_ENV !== 'production';
+  console.log(`[INIT] ${isDevelopment ? '✅' : '⚠️'} Modo: ${isDevelopment ? 'DESENVOLVIMENTO' : 'PRODUÇÃO'}`);
+  console.log(`[INIT] ${isDevelopment ? 'Frontend rodando separadamente na porta 3000' : 'Frontend não encontrado - servindo apenas API'}`);
+  if (!isDevelopment) {
+    console.log(`[INIT] ⚠️ Frontend não encontrado em: ${indexPath}`);
+    console.log(`[INIT] ⚠️ Verifique se o frontend foi buildado e copiado para backend/public/app`);
+  }
+}
+
+console.log('[INIT] ✅ Frontend configurado (rotas de API serão registradas depois)');
+
+// ============================================================
+// AGORA CONFIGURAR BACKEND (pool de banco e rotas)
+// ============================================================
+console.log('[INIT] 🔧 Configurando backend (pool de banco e rotas)...');
 
 // Registrar rotas (pode falhar se pool for null, mas não deve bloquear)
 try {
@@ -7605,49 +7674,13 @@ app.use((req, res, next) => {
   next();
 });
 
-// Configurar rota catch-all para servir frontend React (deve ser a última rota)
-// Isso permite que o React Router funcione corretamente (SPA)
-const frontendPath = path.join(__dirname, 'public', 'app');
-const indexPath = path.join(frontendPath, 'index.html');
-
-// Logs detalhados para debug
-console.log('[INIT] Verificando frontend...');
-console.log(`[INIT] __dirname: ${__dirname}`);
-console.log(`[INIT] Frontend path: ${frontendPath}`);
-console.log(`[INIT] Index path: ${indexPath}`);
-console.log(`[INIT] Index exists: ${fs.existsSync(indexPath)}`);
-
-// Verificar se o diretório public/app existe
-const publicAppExists = fs.existsSync(frontendPath);
-console.log(`[INIT] Public/app directory exists: ${publicAppExists}`);
-
-if (publicAppExists) {
-  // Listar arquivos no diretório para debug
-  try {
-    const files = fs.readdirSync(frontendPath);
-    console.log(`[INIT] Arquivos em public/app: ${files.slice(0, 10).join(', ')}${files.length > 10 ? '...' : ''}`);
-  } catch (err) {
-    console.log(`[INIT] Erro ao listar arquivos: ${err.message}`);
-  }
-}
-
-// Verificar se o frontend existe (pode não existir em desenvolvimento local)
-const frontendExists = fs.existsSync(indexPath);
-
-if (frontendExists) {
-  // Servir arquivos estáticos do frontend (JS, CSS, imagens, etc.)
-  // Usar caminho absoluto para garantir que funcione no Cloud Run
-  const absoluteFrontendPath = path.resolve(frontendPath);
-  const absoluteIndexPath = path.resolve(indexPath);
-  
-  console.log(`[INIT] Absolute frontend path: ${absoluteFrontendPath}`);
-  console.log(`[INIT] Absolute index path: ${absoluteIndexPath}`);
-  
-  app.use(express.static(absoluteFrontendPath));
-  
-  // Para todas as rotas que não começam com /api ou /health, servir o index.html (SPA fallback)
-  // Isso permite que o React Router funcione corretamente
-  // IMPORTANTE: Esta rota deve ser a ÚLTIMA rota registrada
+// ============================================================
+// ROTA CATCH-ALL PARA FRONTEND (deve ser a ÚLTIMA rota)
+// ============================================================
+// Para todas as rotas que não começam com /api ou /health, servir o index.html (SPA fallback)
+// Isso permite que o React Router funcione corretamente
+// IMPORTANTE: Esta rota deve ser a ÚLTIMA rota registrada (depois de todas as rotas de API)
+if (frontendExists && absoluteIndexPath) {
   app.get('*', (req, res) => {
     // Excluir rotas de API e health check
     if (req.path.startsWith('/api') || req.path === '/health') {
@@ -7665,23 +7698,10 @@ if (frontendExists) {
       }
     });
   });
-  
-  console.log('[INIT] ✅ Frontend React configurado para servir em /');
-  console.log(`[INIT] Frontend path: ${absoluteFrontendPath}`);
+  console.log('[INIT] ✅ Rota catch-all do frontend configurada (última rota)');
 } else {
-  // Em desenvolvimento local: frontend roda separado na porta 3000 (React dev server)
-  // Backend apenas serve API na porta 3005
-  // Em produção (Cloud Run): frontend é buildado e copiado para backend/public/app
-  const isDevelopment = process.env.NODE_ENV !== 'production';
-  console.log(`[INIT] ${isDevelopment ? '✅' : '⚠️'} Modo: ${isDevelopment ? 'DESENVOLVIMENTO' : 'PRODUÇÃO'}`);
-  console.log(`[INIT] ${isDevelopment ? 'Frontend rodando separadamente na porta 3000' : 'Frontend não encontrado - servindo apenas API'}`);
-  if (!isDevelopment) {
-    console.log(`[INIT] ⚠️ Frontend não encontrado em: ${indexPath}`);
-    console.log(`[INIT] ⚠️ Verifique se o frontend foi buildado e copiado para backend/public/app`);
-  }
-  
   // Em produção sem frontend, servir mensagem JSON na raiz
-  // Mas ainda permitir que outras rotas funcionem
+  const isDevelopment = process.env.NODE_ENV !== 'production';
   app.get('/', (req, res) => {
     if (!isDevelopment) {
       res.json({ 

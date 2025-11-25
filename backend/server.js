@@ -252,9 +252,9 @@ const createDatabasePool = () => {
     ...baseConfig,
     // Limites do pool
     max: 10, // Máximo de conexões no pool
-    min: 2,  // Mínimo de conexões mantidas
+    min: 0,  // Mínimo de conexões mantidas (0 = não criar conexões na inicialização)
     // Timeouts (importantes para Cloud Run)
-    connectionTimeoutMillis: 10000, // 10 segundos para estabelecer conexão
+    connectionTimeoutMillis: 5000, // 5 segundos para estabelecer conexão (reduzido para falhar mais rápido)
     idleTimeoutMillis: 30000, // 30 segundos antes de fechar conexão idle
     // Retry e keep-alive
     keepAlive: true,
@@ -451,12 +451,13 @@ try {
   
   // Testar conexão de forma assíncrona (não bloqueia startup)
   // Usar Promise.resolve().then() para garantir que todas as promises sejam tratadas
+  // IMPORTANTE: Não aguardar esta promise - ela roda em background
   Promise.resolve().then(async () => {
     try {
-      // Timeout de 15 segundos para o teste de conexão
+      // Timeout reduzido para 8 segundos (mais rápido para falhar e continuar)
       const testQuery = pool.query('SELECT NOW() as current_time, version() as pg_version');
       const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Timeout: conexão demorou mais de 15 segundos')), 15000)
+        setTimeout(() => reject(new Error('Timeout: conexão demorou mais de 8 segundos')), 8000)
       );
       
       const result = await Promise.race([testQuery, timeoutPromise]);
@@ -7685,11 +7686,14 @@ app.use((req, res, next) => {
 // Para todas as rotas que não começam com /api ou /health, servir o index.html (SPA fallback)
 // Isso permite que o React Router funcione corretamente
 // IMPORTANTE: Esta rota deve ser a ÚLTIMA rota registrada (depois de todas as rotas de API)
+// IMPORTANTE: Express processa rotas na ordem, então /health já foi registrado antes e terá prioridade
 if (frontendExists && absoluteIndexPath) {
-  app.get('*', (req, res) => {
-    // Excluir rotas de API e health check
-    if (req.path.startsWith('/api') || req.path === '/health') {
-      return res.status(404).json({ error: 'Endpoint not found' });
+  app.get('*', (req, res, next) => {
+    // IMPORTANTE: Não interceptar rotas de API ou health check
+    // Essas rotas já foram registradas antes e devem ter prioridade
+    if (req.path.startsWith('/api') || req.path === '/health' || req.path.startsWith('/health')) {
+      // Deixar Express continuar procurando outras rotas (não deve chegar aqui se /health foi registrado)
+      return next();
     }
     // Caso contrário, servir o index.html do React
     console.log(`[FRONTEND] Servindo index.html para: ${req.path}`);

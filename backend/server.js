@@ -182,36 +182,104 @@ const createDatabasePool = () => {
     PGUSER,
     PGPASSWORD,
     PGDATABASE,
-    PGSSLMODE
+    PGSSLMODE,
+    INSTANCE_CONNECTION_NAME // Para Cloud SQL via Unix socket
   } = process.env;
 
   const ssl = buildSslConfig(PGSSLMODE);
   const usingDatabaseUrl = Boolean(DATABASE_URL);
+  const isCloudRun = Boolean(process.env.K_SERVICE || process.env.CLOUD_RUN_JOB); // Detecta Cloud Run
+  
+  // Detectar se é Cloud SQL, IP privado ou IP público
+  const isCloudSQL = Boolean(
+    INSTANCE_CONNECTION_NAME || // Cloud SQL via Unix socket
+    (PGHOST && (PGHOST.includes('.sql') || PGHOST.includes('cloudsql'))) || // Cloud SQL hostname
+    (DATABASE_URL && (DATABASE_URL.includes('.sql') || DATABASE_URL.includes('cloudsql'))) // Cloud SQL na URL
+  );
+  
+  // Detectar IP privado (10.x.x.x, 172.16-31.x.x, 192.168.x.x)
+  const isPrivateIP = !isCloudSQL && PGHOST && (
+    /^10\./.test(PGHOST) || // 10.0.0.0/8
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(PGHOST) || // 172.16.0.0/12
+    /^192\.168\./.test(PGHOST) // 192.168.0.0/16
+  );
+  
+  const isExternalIP = !isCloudSQL && !isPrivateIP && PGHOST && /^\d+\.\d+\.\d+\.\d+$/.test(PGHOST); // IP público (formato IPv4)
 
   const baseConfig = usingDatabaseUrl
     ? { connectionString: DATABASE_URL }
     : {
         host: PGHOST,
-        port: PGPORT ? Number(PGPORT) : undefined,
+        port: PGPORT ? Number(PGPORT) : 5432,
         user: PGUSER,
         password: PGPASSWORD,
         database: PGDATABASE
       };
 
+  // Configuração SSL
+  // - Cloud SQL: requer SSL (forçar se não configurado)
+  // - IP privado: SSL geralmente não é necessário em rede privada
+  // - IP público: SSL opcional (usar apenas se PGSSLMODE estiver definido)
   if (ssl !== undefined) {
+    // SSL explicitamente configurado via PGSSLMODE
     baseConfig.ssl = ssl;
+  } else if (isCloudSQL && !PGSSLMODE) {
+    // Cloud SQL sem SSL configurado: forçar SSL
+    console.log('[DB] Cloud SQL detectado: configurando SSL require (obrigatório para Cloud SQL)');
+    baseConfig.ssl = { rejectUnauthorized: false };
+  } else if (isPrivateIP) {
+    // IP privado: SSL geralmente não é necessário em rede privada
+    console.log('[DB] IP privado detectado: SSL não será usado (rede privada)');
+    if (isCloudRun) {
+      console.log('[DB] ⚠️ ATENÇÃO: Cloud Run precisa de conectividade com rede privada para acessar IP privado!');
+      console.log('[DB]   Opções: VPC Connector, NAT Gateway, ou IP público do PostgreSQL');
+    }
+    baseConfig.ssl = false;
+  } else if (isExternalIP) {
+    // IP público: SSL não é obrigatório, deixar sem SSL se não configurado
+    console.log('[DB] IP público detectado: SSL não será usado (configure PGSSLMODE=require se necessário)');
+    baseConfig.ssl = false;
   }
+  // Se não for nenhum dos casos acima, deixar undefined (padrão do PostgreSQL)
+
+  // Configurações do pool otimizadas para Cloud Run
+  const poolConfig = {
+    ...baseConfig,
+    // Limites do pool
+    max: 10, // Máximo de conexões no pool
+    min: 2,  // Mínimo de conexões mantidas
+    // Timeouts (importantes para Cloud Run)
+    connectionTimeoutMillis: 10000, // 10 segundos para estabelecer conexão
+    idleTimeoutMillis: 30000, // 30 segundos antes de fechar conexão idle
+    // Retry e keep-alive
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10000, // 10 segundos
+    // Query timeout
+    query_timeout: 30000, // 30 segundos para queries
+    // Statement timeout (PostgreSQL)
+    statement_timeout: 30000, // 30 segundos
+  };
 
   const logDetails = usingDatabaseUrl
     ? 'source=DATABASE_URL'
     : `host=${baseConfig.host || 'localhost'}, db=${baseConfig.database || '(default)'}, user=${baseConfig.user || '(default)'}`;
 
-  console.log(`[DB] Inicializando pool PostgreSQL (${logDetails}, sslMode=${PGSSLMODE || (ssl ? 'custom' : 'disabled')})`);
-  if (ssl && typeof ssl === 'object') {
-    console.log(`[DB] SSL config -> rejectUnauthorized=${ssl.rejectUnauthorized === false ? 'false' : 'true'}`);
+  const sslStatus = PGSSLMODE || (poolConfig.ssl === false ? 'disabled' : poolConfig.ssl ? 'enabled' : 'not configured');
+  const connectionType = isCloudSQL ? 'Cloud SQL' : isPrivateIP ? 'IP Privado (VPC)' : isExternalIP ? 'IP Público' : 'Local/Outro';
+  
+  console.log(`[DB] Inicializando pool PostgreSQL`);
+  console.log(`[DB]   Tipo: ${connectionType}`);
+  console.log(`[DB]   ${logDetails}`);
+  console.log(`[DB]   SSL: ${sslStatus}`);
+  if (isCloudRun) {
+    console.log('[DB]   Ambiente: Cloud Run (configurações otimizadas)');
   }
+  if (poolConfig.ssl && typeof poolConfig.ssl === 'object') {
+    console.log(`[DB]   SSL config -> rejectUnauthorized=${poolConfig.ssl.rejectUnauthorized === false ? 'false' : 'true'}`);
+  }
+  console.log(`[DB]   Pool -> max=${poolConfig.max}, min=${poolConfig.min}, connectionTimeout=${poolConfig.connectionTimeoutMillis}ms`);
 
-  return new Pool(baseConfig);
+  return new Pool(poolConfig);
 };
 
 /**
@@ -380,24 +448,92 @@ try {
   // Usar Promise.resolve().then() para garantir que todas as promises sejam tratadas
   Promise.resolve().then(async () => {
     try {
-      await pool.query('SELECT 1');
-    console.log('[DB] ✅ Teste de conexão bem-sucedido');
+      // Timeout de 15 segundos para o teste de conexão
+      const testQuery = pool.query('SELECT NOW() as current_time, version() as pg_version');
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Timeout: conexão demorou mais de 15 segundos')), 15000)
+      );
+      
+      const result = await Promise.race([testQuery, timeoutPromise]);
+      console.log('[DB] ✅ Teste de conexão bem-sucedido');
+      if (result.rows && result.rows[0]) {
+        console.log(`[DB] PostgreSQL versão: ${result.rows[0].pg_version.split(' ')[0]} ${result.rows[0].pg_version.split(' ')[1]}`);
+      }
     
-    // Criar tabela de log de impressões na inicialização
-    try {
-      await createPrintLogTable(pool);
-    } catch (logTableError) {
-      console.warn('[DB] ⚠️ Erro ao criar tabela de log na inicialização (continuando...):', logTableError.message);
-    }
+      // Criar tabela de log de impressões na inicialização
+      try {
+        await createPrintLogTable(pool);
+      } catch (logTableError) {
+        console.warn('[DB] ⚠️ Erro ao criar tabela de log na inicialização (continuando...):', logTableError.message);
+      }
     } catch (err) {
-    console.warn('[DB] ⚠️ Teste de conexão falhou (continuando...):', err.message);
+      console.error('[DB] ❌ Teste de conexão falhou:', err.message);
+      console.error('[DB] Detalhes do erro:', {
+        code: err.code,
+        errno: err.errno,
+        syscall: err.syscall,
+        address: err.address,
+        port: err.port,
+        stack: err.stack?.split('\n').slice(0, 3).join('\n')
+      });
+      
+      // Dicas específicas para Cloud Run
+      if (process.env.K_SERVICE || process.env.CLOUD_RUN_JOB) {
+        // Detectar tipo de conexão para dicas específicas
+        const { PGHOST, DATABASE_URL, INSTANCE_CONNECTION_NAME } = process.env;
+        const detectedIsCloudSQL = Boolean(
+          INSTANCE_CONNECTION_NAME ||
+          (PGHOST && (PGHOST.includes('.sql') || PGHOST.includes('cloudsql'))) ||
+          (DATABASE_URL && (DATABASE_URL.includes('.sql') || DATABASE_URL.includes('cloudsql')))
+        );
+        const detectedIsPrivateIP = !detectedIsCloudSQL && PGHOST && (
+          /^10\./.test(PGHOST) || /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(PGHOST) || /^192\.168\./.test(PGHOST)
+        );
+        const detectedIsExternalIP = !detectedIsCloudSQL && !detectedIsPrivateIP && PGHOST && /^\d+\.\d+\.\d+\.\d+$/.test(PGHOST);
+        
+        console.error('[DB] 💡 Dicas para Cloud Run:');
+        console.error('   1. Verifique se as variáveis de ambiente estão configuradas no GitHub Secrets:');
+        console.error('      - DATABASE_URL (recomendado) ou PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE');
+        if (detectedIsCloudSQL) {
+          console.error('   2. Cloud SQL detectado: SSL é obrigatório (PGSSLMODE=require)');
+          console.error('   3. Verifique se o Cloud Run tem permissão para acessar o Cloud SQL');
+          console.error('   4. Verifique se o Cloud SQL permite conexões do Cloud Run');
+        } else if (detectedIsPrivateIP) {
+          console.error('   2. ⚠️ IP PRIVADO detectado: Cloud Run precisa de conectividade com rede privada!');
+          console.error('   3. Opções para conectar Cloud Run a IP privado:');
+          console.error('      a) VPC Connector: --vpc-connector=NOME_DO_CONNECTOR no deploy');
+          console.error('      b) NAT Gateway: PostgreSQL acessível via IP público');
+          console.error('      c) Cloud SQL Proxy: se for Cloud SQL');
+          console.error('   4. Verifique se o PostgreSQL está acessível do Cloud Run');
+          console.error('   5. Se o PostgreSQL tem IP público, use o IP público no PGHOST');
+        } else if (detectedIsExternalIP) {
+          console.error('   2. IP público detectado: verifique se o firewall permite conexões do Cloud Run');
+          console.error('   3. Se o banco requer SSL, configure PGSSLMODE=require');
+          console.error('   4. Verifique se o IP do Cloud Run está autorizado no firewall do PostgreSQL');
+        } else {
+          console.error('   2. Verifique se o host/porta estão corretos e acessíveis do Cloud Run');
+          console.error('   3. Se necessário, configure PGSSLMODE=require para SSL');
+        }
+      }
+      
+      console.warn('[DB] ⚠️ Continuando sem conexão ao banco (aplicação pode funcionar parcialmente)');
     }
   }).catch((err) => {
     // Capturar qualquer erro não tratado na promise
-    console.warn('[DB] ⚠️ Erro não tratado no teste de conexão (continuando...):', err.message);
+    console.error('[DB] ❌ Erro não tratado no teste de conexão:', err.message);
+    console.error('[DB] Stack:', err.stack);
   });
 } catch (error) {
-  console.error('[DB] Erro ao criar pool PostgreSQL:', error);
+  console.error('[DB] ❌ Erro ao criar pool PostgreSQL:', error.message);
+  console.error('[DB] Stack:', error.stack);
+  console.error('[DB] Variáveis de ambiente detectadas:', {
+    hasDatabaseUrl: Boolean(process.env.DATABASE_URL),
+    hasPghost: Boolean(process.env.PGHOST),
+    hasPguser: Boolean(process.env.PGUSER),
+    hasPgdatabase: Boolean(process.env.PGDATABASE),
+    pgsslmode: process.env.PGSSLMODE || 'não definido',
+    isCloudRun: Boolean(process.env.K_SERVICE || process.env.CLOUD_RUN_JOB)
+  });
   console.log('[DB] Continuando sem pool (aplicação pode funcionar sem DB)');
   pool = null;
 }

@@ -1,4 +1,9 @@
-﻿console.log('[INIT] Iniciando carregamento de módulos...');
+﻿console.log('[INIT] ========================================');
+console.log('[INIT] Iniciando carregamento de módulos...');
+console.log('[INIT] PORT:', process.env.PORT || 'não definido');
+console.log('[INIT] SERVER_PORT:', process.env.SERVER_PORT || 'não definido');
+console.log('[INIT] NODE_ENV:', process.env.NODE_ENV || 'não definido');
+console.log('[INIT] ========================================');
 
 const express = require('express');
 console.log('[INIT] express carregado');
@@ -7792,6 +7797,13 @@ function checkAndClearPort(port) {
 
 // Função para iniciar o servidor
 function startServer() {
+  console.log('[STARTUP] ========================================');
+  console.log('[STARTUP] Iniciando servidor...');
+  console.log('[STARTUP] SERVER_PORT:', SERVER_PORT);
+  console.log('[STARTUP] process.env.PORT:', process.env.PORT || 'não definido');
+  console.log('[STARTUP] Escutando em: 0.0.0.0:' + SERVER_PORT);
+  console.log('[STARTUP] ========================================');
+  
   // Verificar e limpar porta antes de iniciar
   checkAndClearPort(SERVER_PORT);
   try {
@@ -7799,6 +7811,7 @@ function startServer() {
     console.log(`✅ Servidor rodando na porta ${SERVER_PORT}`);
     console.log(`✅ Servidor escutando em 0.0.0.0:${SERVER_PORT}`);
     console.log(`✅ Health check disponível em http://0.0.0.0:${SERVER_PORT}/health`);
+    console.log(`✅ Frontend disponível em http://0.0.0.0:${SERVER_PORT}/`);
   });
 
     server.on('listening', () => {

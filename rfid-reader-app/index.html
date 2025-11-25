@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Leitor RFID - SKU Variant</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Leitor RFID - SKU a Nível Variant</h1>
+      <div class="status-indicator">
+        <span id="status-connection" class="status-badge disconnected">Desconectado</span>
+        <span id="status-reading" class="status-badge stopped">Parado</span>
+      </div>
+    </header>
+
+    <main>
+      <!-- Painel de Conexão -->
+      <section class="panel connection-panel">
+        <h2>Configuração</h2>
+        <div class="form-group">
+          <label for="port-select">Leitor RFID:</label>
+          <div class="port-select-group">
+            <select id="port-select">
+              <option value="">Selecione um leitor RFID...</option>
+            </select>
+            <button id="refresh-ports-btn" class="btn btn-secondary">Detectar</button>
+          </div>
+          <small style="color: #6b7280; margin-top: 5px; display: block;">
+            O app detecta automaticamente portas seriais, HID, USB direto e Bluetooth Serial
+          </small>
+        </div>
+        
+        <div class="form-group">
+          <label for="baud-rate">Velocidade (Baud Rate):</label>
+          <select id="baud-rate">
+            <option value="9600" selected>9600</option>
+            <option value="19200">19200</option>
+            <option value="38400">38400</option>
+            <option value="57600">57600</option>
+            <option value="115200">115200</option>
+          </select>
+        </div>
+
+        <div class="button-group">
+          <button id="connect-btn" class="btn btn-primary">Conectar</button>
+          <button id="disconnect-btn" class="btn btn-secondary" disabled>Desconectar</button>
+        </div>
+      </section>
+
+      <!-- Painel de Controle -->
+      <section class="panel control-panel">
+        <h2>Controles</h2>
+        <div class="button-group">
+          <button id="start-reading-btn" class="btn btn-success" disabled>Iniciar Leitura</button>
+          <button id="stop-reading-btn" class="btn btn-danger" disabled>Parar Leitura</button>
+        </div>
+      </section>
+
+      <!-- Painel de Leitura Atual -->
+      <section class="panel current-read-panel">
+        <h2>Leitura Atual</h2>
+        <div id="current-read" class="current-read">
+          <div class="read-placeholder">
+            <p>Nenhuma tag lida ainda</p>
+            <small>Aproxime uma tag RFID do leitor</small>
+          </div>
+        </div>
+      </section>
+
+      <!-- Painel de Histórico -->
+      <section class="panel history-panel">
+        <h2>Histórico de Leituras</h2>
+        <div class="history-controls">
+          <button id="clear-history-btn" class="btn btn-secondary btn-sm">Limpar</button>
+          <span class="history-count">Total: <span id="read-count">0</span></span>
+        </div>
+        <div id="readings-history" class="readings-history">
+          <div class="empty-history">
+            <p>Nenhuma leitura registrada</p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
+

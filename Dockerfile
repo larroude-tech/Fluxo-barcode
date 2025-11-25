@@ -85,6 +85,11 @@ COPY templates/ ./templates/
 
 # Optional: create non-root user for better security
 RUN groupadd -r nodejs && useradd -r -g nodejs nodejs
+
+# Garantir permissões do frontend e backend antes de mudar para nodejs
+RUN chown -R nodejs:nodejs /app/backend && \
+    chmod -R 755 /app/backend/public 2>/dev/null || true
+
 USER nodejs
 
 # Cloud Run will set PORT automatically (default: 8080)

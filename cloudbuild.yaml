@@ -26,8 +26,43 @@ steps:
       - '--timeout=300'
       - '--max-instances=10'
       - '--set-env-vars=NODE_ENV=production'
-      # Adicione outras variáveis de ambiente aqui ou configure no Console
-      # --set-env-vars=PGHOST=seu-host,PGDATABASE=seu-db,PGUSER=seu-user,PGPASSWORD=sua-senha
+      # ============================================
+      # CONFIGURAÇÃO DO BANCO DE DADOS
+      # ============================================
+      # Opção 1: Usar DATABASE_URL (recomendado)
+      # --set-env-vars=DATABASE_URL=postgresql://user:password@host:port/database
+      #
+      # Opção 2: Usar variáveis individuais
+      # --set-env-vars=PGHOST=seu-host,PGPORT=5432,PGDATABASE=seu-db,PGUSER=seu-user,PGPASSWORD=sua-senha
+      #
+      # Opção 3: Se for Cloud SQL, use INSTANCE_CONNECTION_NAME
+      # --set-env-vars=INSTANCE_CONNECTION_NAME=projeto:regiao:instancia
+      #
+      # SSL (se necessário):
+      # --set-env-vars=PGSSLMODE=require
+      #
+      # ============================================
+      # CONECTIVIDADE DE REDE (se banco em IP privado)
+      # ============================================
+      # Se o banco está em IP privado (10.x.x.x, 172.16-31.x.x, 192.168.x.x),
+      # você precisa de um VPC Connector:
+      # --vpc-connector=NOME_DO_CONNECTOR
+      # --vpc-egress=all-traffic
+      #
+      # Para criar um VPC Connector:
+      # gcloud compute networks vpc-access connectors create NOME_DO_CONNECTOR \
+      #   --region=us-central1 \
+      #   --subnet=SUBNET_NAME \
+      #   --subnet-project=PROJECT_ID \
+      #   --min-instances=2 \
+      #   --max-instances=3
+      #
+      # ============================================
+      # NOTA: Variáveis sensíveis devem ser configuradas via:
+      # 1. Google Cloud Console (Cloud Run > Variáveis de ambiente)
+      # 2. Secret Manager (recomendado para produção)
+      # 3. GitHub Secrets (se usando GitHub Actions)
+      # ============================================
 
 images:
   - 'gcr.io/$PROJECT_ID/fluxo-barcode:$SHORT_SHA'

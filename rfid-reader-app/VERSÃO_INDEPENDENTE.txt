@@ -1,0 +1,100 @@
+═══════════════════════════════════════════════════════════════
+  RFID READER APP - VERSÃO COMPLETAMENTE INDEPENDENTE
+═══════════════════════════════════════════════════════════════
+
+✅ APLICATIVO 100% AUTÔNOMO E PORTÁTIL
+
+Este aplicativo NÃO depende de nenhuma outra pasta do projeto.
+Você pode copiar, mover, renomear ou usar em qualquer lugar!
+
+═══════════════════════════════════════════════════════════════
+  CARACTERÍSTICAS
+═══════════════════════════════════════════════════════════════
+
+✓ Leitura de tags RFID via porta serial/USB
+✓ Decodificação de EPC para barcode e PO
+✓ Interface moderna e intuitiva
+✓ Histórico de leituras
+✓ Configurável via config.js
+✓ Sem dependências externas
+✓ Pronto para build e distribuição
+
+═══════════════════════════════════════════════════════════════
+  ARQUIVOS INCLUÍDOS
+═══════════════════════════════════════════════════════════════
+
+📄 main.js           - Processo principal Electron
+📄 preload.js        - Bridge de segurança
+📄 rfid-reader.js    - Classe de comunicação RFID
+📄 config.js         - Configurações editáveis
+📄 index.html        - Interface HTML
+📄 styles.css        - Estilos CSS
+📄 renderer.js       - Lógica da interface
+📄 package.json      - Dependências (independente)
+📄 README.md         - Documentação completa
+📄 INSTALACAO.md     - Guia de instalação
+📄 LEIA-ME.md        - Resumo rápido
+
+═══════════════════════════════════════════════════════════════
+  INSTALAÇÃO RÁPIDA
+═══════════════════════════════════════════════════════════════
+
+1. cd rfid-reader-app
+2. npm install
+3. npm start
+
+Pronto! Funciona imediatamente.
+
+═══════════════════════════════════════════════════════════════
+  MOVER ENTRE PROJETOS
+═══════════════════════════════════════════════════════════════
+
+Para usar em outro lugar:
+1. Copie a pasta inteira "rfid-reader-app"
+2. Execute "npm install" na nova localização
+3. Execute "npm start"
+4. Pronto! Nada mais necessário.
+
+═══════════════════════════════════════════════════════════════
+  CONFIGURAÇÃO (OPCIONAL)
+═══════════════════════════════════════════════════════════════
+
+Edite config.js para:
+- Ajustar velocidade do leitor (Baud Rate)
+- Configurar comandos específicos do leitor
+- Habilitar busca de SKU via API (opcional)
+
+Mas tudo funciona sem configuração!
+
+═══════════════════════════════════════════════════════════════
+  BUILD PARA DISTRIBUIÇÃO
+═══════════════════════════════════════════════════════════════
+
+Para criar executável Windows:
+  npm run build:win
+
+O executável será gerado em dist/ e pode ser usado
+em qualquer computador Windows sem instalação.
+
+═══════════════════════════════════════════════════════════════
+  GARANTIAS DE INDEPENDÊNCIA
+═══════════════════════════════════════════════════════════════
+
+✓ Nenhuma importação de arquivos de outras pastas
+✓ Nenhuma dependência de backend externo
+✓ Todas as dependências no package.json próprio
+✓ Configurações locais no config.js
+✓ Funciona offline completamente
+✓ Pode ser movido/copiado livremente
+
+═══════════════════════════════════════════════════════════════
+  SUPORTE
+═══════════════════════════════════════════════════════════════
+
+Consulte:
+- README.md para documentação completa
+- INSTALACAO.md para guia de instalação
+- LEIA-ME.md para resumo rápido
+
+═══════════════════════════════════════════════════════════════
+

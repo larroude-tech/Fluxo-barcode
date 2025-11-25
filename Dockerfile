@@ -74,6 +74,7 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 COPY --from=backend-deps /app/backend ./backend
 
 # Copy frontend build into backend public assets
+# COPY cria o diretório automaticamente se não existir
 COPY --from=frontend-builder /app/frontend/build ./backend/public/app
 
 # Copy templates and layouts from project root
@@ -87,8 +88,10 @@ COPY templates/ ./templates/
 RUN groupadd -r nodejs && useradd -r -g nodejs nodejs
 
 # Garantir permissões do frontend e backend antes de mudar para nodejs
-RUN chown -R nodejs:nodejs /app/backend && \
-    chmod -R 755 /app/backend/public 2>/dev/null || true
+# Criar diretório public se não existir (garantir antes de mudar permissões)
+RUN mkdir -p /app/backend/public && \
+    chown -R nodejs:nodejs /app/backend && \
+    chmod -R 755 /app/backend/public
 
 USER nodejs
 

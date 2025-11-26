@@ -59,11 +59,12 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Install Python dependencies in runner stage (needed for API Python)
+# Install runtime dependencies (Python for API, libvips for sharp)
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
+    libvips42 \
   && rm -rf /var/lib/apt/lists/*
 
 # Copy and install Python requirements
@@ -87,17 +88,24 @@ COPY templates/ ./templates/
 # Optional: create non-root user for better security
 RUN groupadd -r nodejs && useradd -r -g nodejs nodejs
 
-# Garantir permissões do frontend e backend antes de mudar para nodejs
-# Criar diretório public se não existir (garantir antes de mudar permissões)
-RUN mkdir -p /app/backend/public && \
-    chown -R nodejs:nodejs /app/backend && \
-    chmod -R 755 /app/backend/public
+# Criar diretórios necessários e garantir permissões
+# layouts, uploads, output são usados pelo app em runtime
+RUN mkdir -p /app/backend/public \
+    && mkdir -p /app/backend/layouts \
+    && mkdir -p /app/backend/uploads \
+    && mkdir -p /app/backend/output \
+    && chown -R nodejs:nodejs /app \
+    && chmod -R 755 /app/backend/public
 
 USER nodejs
 
 # Cloud Run will set PORT automatically (default: 8080)
 # The app uses process.env.PORT || 3005, so it will use Cloud Run's PORT
 EXPOSE 8080
+
+# Health check para Cloud Run
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:' + (process.env.PORT || 8080) + '/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1))"
 
 CMD ["node", "backend/server.js"]
 

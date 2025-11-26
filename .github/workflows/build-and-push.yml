@@ -88,10 +88,11 @@ jobs:
           service: ${{ secrets.CLOUD_RUN_SERVICE || env.IMAGE_NAME }}
           region: ${{ env.EFFECTIVE_GCP_REGION || env.DEFAULT_GCP_REGION }}
           image: ${{ env.IMAGE_URI }}
+          project_id: ${{ secrets.GCP_PROJECT_ID || env.DEFAULT_GCP_PROJECT_ID }}
           env_vars: |
             NODE_ENV=production
           secrets: ${{ steps.prepare_secrets.outputs.secrets }}
-          flags: '--service-account=data-github-integration@larroude-data-prod.iam.gserviceaccount.com --timeout=300 --cpu=1 --memory=512Mi'
+          flags: '--service-account=data-github-integration@larroude-data-prod.iam.gserviceaccount.com --timeout=300 --cpu=1 --memory=512Mi --allow-unauthenticated'
 
       - name: Export deployment info
         run: |

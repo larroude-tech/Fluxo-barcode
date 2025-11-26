@@ -96,3 +96,29 @@ backend/layouts/
 
 # Componentes React específicos do ambiente (manter vazio se não utilizar)
 frontend/src/components/PrintAllPreviewModal.js
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# GCP Service Account Keys (SENSÍVEL - NUNCA COMMITAR)
+gcp-sa-key*.json
+*-sa-key*.json
+*.credentials.json
+
+# Windows printer configuration files
+ZDesigner*
+Zebra*
+
+# Large data files
+AssetTagList*.csv
+
+# Setup scripts (environment-specific)
+setup-gcp-permissions.sh
+setup-gcp-permissions.ps1
+
+# Temporary Python scripts
+temp_script_*.py

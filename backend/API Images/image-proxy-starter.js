@@ -37,8 +37,14 @@ async function startImageProxy() {
         const result = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: 'utf8', stdio: 'pipe' });
         return result && result.trim().length > 0;
       } else {
-        const result = execSync(`lsof -ti:${port}`, { encoding: 'utf8', stdio: 'pipe' });
-        return result && result.trim().length > 0;
+        // Linux/Mac: usar lsof ou ss (ss é mais comum em containers)
+        try {
+          const result = execSync(`lsof -ti:${port} 2>/dev/null || ss -tlnp 2>/dev/null | grep :${port}`, { encoding: 'utf8', stdio: 'pipe' });
+          return result && result.trim().length > 0;
+        } catch (e) {
+          // Se lsof/ss não existirem, assumir porta disponível
+          return false;
+        }
       }
     } catch (e) {
       return false; // Porta não está em uso
@@ -107,19 +113,23 @@ async function startImageProxy() {
           // Ignorar se não conseguir listar processos Python
         }
       } else {
-        const portCheck = execSync(`lsof -ti:${port}`, { encoding: 'utf8', stdio: 'pipe' });
-        if (portCheck && portCheck.trim()) {
-          const pids = portCheck.trim().split('\n');
-          for (const pid of pids) {
-            if (pid && !isNaN(pid)) {
+        // Linux/Mac: tentar lsof ou fuser
+        try {
+          const portCheck = execSync(`lsof -ti:${port} 2>/dev/null || fuser ${port}/tcp 2>/dev/null`, { encoding: 'utf8', stdio: 'pipe' });
+          if (portCheck && portCheck.trim()) {
+            const pids = portCheck.trim().split(/[\n\s]+/).filter(p => p && !isNaN(p));
+            for (const pid of pids) {
               try {
-                execSync(`kill -9 ${pid}`, { encoding: 'utf8', stdio: 'pipe' });
+                execSync(`kill -9 ${pid} 2>/dev/null`, { encoding: 'utf8', stdio: 'pipe' });
                 console.log(`[IMAGE-PROXY] ✅ Processo ${pid} encerrado na porta ${port}`);
               } catch (killError) {
-                // Ignorar erros
+                // Ignorar erros - processo pode já ter terminado
               }
             }
           }
+        } catch (e) {
+          // Comandos podem não existir em containers mínimos - ignorar
+          console.log(`[IMAGE-PROXY] ⚠️ Não foi possível limpar porta ${port} (comandos não disponíveis)`);
         }
       }
       // Aguardar um pouco para a porta ser liberada
